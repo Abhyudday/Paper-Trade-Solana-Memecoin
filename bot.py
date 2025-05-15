@@ -426,6 +426,49 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_recent_transactions(query, context):
     """Handle recent transactions request"""
     try:
+        keyboard = [
+            [InlineKeyboardButton("👤 My Recent Trades", callback_data="view_my_trades")],
+            [InlineKeyboardButton("🔍 Check Any Wallet", callback_data="check_wallet_trades")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
+        ]
+        await query.message.reply_text(
+            "📊 Choose an option to view recent trades:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        logger.error(f"Error in recent transactions menu: {e}")
+        await query.message.reply_text("❌ An error occurred. Please try again.")
+
+async def handle_my_trades(query, context):
+    """Handle viewing user's own trades"""
+    try:
+        session = Session()
+        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
+        
+        if not user or not user.history:
+            await query.message.reply_text("📭 No trading history found.")
+            return
+        
+        # Format the last 5 trades
+        trades = user.history[-5:]  # Get last 5 trades
+        formatted_trades = "\n\n".join(trades)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Refresh", callback_data="refresh_my_trades")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
+        ]
+        
+        await query.message.reply_text(
+            f"📊 Your Recent Trades:\n\n{formatted_trades}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        logger.error(f"Error showing my trades: {e}")
+        await query.message.reply_text("❌ An error occurred while fetching your trades.")
+
+async def handle_check_wallet_trades(query, context):
+    """Handle request to check any wallet's trades"""
+    try:
         session = Session()
         user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
         
@@ -437,8 +480,35 @@ async def handle_recent_transactions(query, context):
             "🔍 Enter the Solana wallet address to view recent trades:"
         )
     except Exception as e:
-        logger.error(f"Error in recent transactions: {e}")
+        logger.error(f"Error in check wallet trades: {e}")
         await query.message.reply_text("❌ An error occurred. Please try again.")
+
+async def handle_refresh_my_trades(query, context):
+    """Handle refresh of user's own trades"""
+    try:
+        session = Session()
+        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
+        
+        if not user or not user.history:
+            await query.message.reply_text("📭 No trading history found.")
+            return
+        
+        # Format the last 5 trades
+        trades = user.history[-5:]  # Get last 5 trades
+        formatted_trades = "\n\n".join(trades)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Refresh", callback_data="refresh_my_trades")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
+        ]
+        
+        await query.message.edit_text(
+            f"📊 Your Recent Trades:\n\n{formatted_trades}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        logger.error(f"Error refreshing my trades: {e}")
+        await query.message.reply_text("❌ An error occurred while refreshing your trades.")
 
 async def handle_wallet_address(update, context, wallet_address):
     """Handle wallet address input for viewing recent transactions"""
@@ -600,6 +670,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_coming_soon(query, context, "Check Wallet PnL")
         elif data == "menu_track_wallet":
             await handle_recent_transactions(query, context)
+        elif data == "view_my_trades":
+            await handle_my_trades(query, context)
+        elif data == "check_wallet_trades":
+            await handle_check_wallet_trades(query, context)
+        elif data == "refresh_my_trades":
+            await handle_refresh_my_trades(query, context)
         elif data.startswith("recent_trades:"):
             wallet_address = data.split(":")[1]
             await handle_wallet_address(query, context, wallet_address)
