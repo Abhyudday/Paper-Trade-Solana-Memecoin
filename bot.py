@@ -429,15 +429,14 @@ async def setup_helius_webhook(wallet_address):
     """Setup webhook for wallet tracking"""
     url = "https://api.helius.xyz/v0/webhooks"
     headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {HELIUS_API_KEY}"
+        "Content-Type": "application/json"
     }
     data = {
         "webhookURL": f"{WEBHOOK_URL}/webhook",
         "transactionTypes": ["SWAP", "TRANSFER"],
         "accountAddresses": [wallet_address],
         "webhookType": "enhanced",
-        "authHeader": HELIUS_API_KEY
+        "api-key": HELIUS_API_KEY  # Changed from authHeader to api-key
     }
     
     try:
@@ -730,11 +729,13 @@ async def test_webhook_config():
         # Test Helius API connection
         url = "https://api.helius.xyz/v0/webhooks"
         headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {HELIUS_API_KEY}"
+            "Content-Type": "application/json"
+        }
+        data = {
+            "api-key": HELIUS_API_KEY
         }
         
-        response = await asyncio.to_thread(requests.get, url, headers=headers)
+        response = await asyncio.to_thread(requests.get, url, headers=headers, json=data)
         logger.info(f"Helius API test response: {response.status_code}")
         
         if response.status_code == 200:
@@ -744,7 +745,7 @@ async def test_webhook_config():
     except Exception as e:
         logger.error(f"❌ Webhook configuration test failed: {str(e)}")
 
-def main():
+async def main():
     """Start the bot"""
     global application
     
@@ -766,14 +767,28 @@ def main():
     app.router.add_post('/webhook', webhook_handler)
     
     # Test webhook configuration
-    asyncio.run(test_webhook_config())
+    await test_webhook_config()
     
     # Start the bot
     logger.info("Bot starting...")
-    application.run_polling(drop_pending_updates=True)
+    await application.initialize()
+    await application.start()
+    await application.run_polling(drop_pending_updates=True)
     
     # Start webhook server
-    web.run_app(app, host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8080)))
+    await site.start()
+    
+    # Keep the bot running
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except Exception as e:
+        logger.error(f"Error in main loop: {e}")
+    finally:
+        await application.stop()
 
 if __name__ == '__main__':
-    main() 
+    asyncio.run(main()) 
