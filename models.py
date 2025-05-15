@@ -1,17 +1,22 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, BigInteger
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, BigInteger, JSON
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
+import os
 
 Base = declarative_base()
 
 class User(Base):
     __tablename__ = 'users'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False)
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(BigInteger, unique=True)
     username = Column(String)
     balance = Column(Float, default=10000.0)  # Initial balance 10k USD
+    holdings = Column(JSON, default={})  # Store holdings as JSON
+    realized_pnl = Column(Float, default=0.0)
+    history = Column(JSON, default=[])  # Store trade history as JSON
+    context = Column(JSON, default={})  # Store current context as JSON
     referred_by = Column(BigInteger, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
