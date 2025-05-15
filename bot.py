@@ -427,7 +427,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_helius_webhook(wallet_address):
     """Setup webhook for wallet tracking"""
-    url = "https://api.helius.xyz/v0/webhooks"
+    url = f"https://api.helius.xyz/v0/webhooks?api-key={HELIUS_API_KEY}"
     headers = {
         "Content-Type": "application/json"
     }
@@ -435,8 +435,7 @@ async def setup_helius_webhook(wallet_address):
         "webhookURL": f"{WEBHOOK_URL}/webhook",
         "transactionTypes": ["SWAP", "TRANSFER"],
         "accountAddresses": [wallet_address],
-        "webhookType": "enhanced",
-        "api-key": HELIUS_API_KEY
+        "webhookType": "enhanced"
     }
     
     try:
@@ -728,16 +727,13 @@ async def test_webhook_config():
         logger.info(f"HELIUS_API_KEY: {HELIUS_API_KEY[:8]}...")  # Only log first 8 chars for security
         
         # Test Helius API connection
-        url = "https://api.helius.xyz/v0/webhooks"
+        url = f"https://api.helius.xyz/v0/webhooks?api-key={HELIUS_API_KEY}"
         headers = {
             "Content-Type": "application/json"
         }
-        data = {
-            "api-key": HELIUS_API_KEY
-        }
         
-        logger.info(f"Testing Helius API with data: {json.dumps(data, indent=2)}")
-        response = await asyncio.to_thread(requests.get, url, headers=headers, json=data)
+        logger.info(f"Testing Helius API with URL: {url}")
+        response = await asyncio.to_thread(requests.get, url, headers=headers)
         logger.info(f"Helius API test response: {response.status_code}")
         logger.info(f"Helius API test response body: {response.text}")
         
