@@ -5,13 +5,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
-from sqlalchemy.orm import sessionmaker
 import requests
-import json
 import asyncio
-
-from models import User, Trade, init_db
-from token_utils import TokenUtils
 
 # Load environment variables
 load_dotenv()
@@ -23,45 +18,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize database
-engine = init_db(os.getenv('DATABASE_URL'))
-Session = sessionmaker(bind=engine)
-
 # Constants
 INITIAL_BALANCE = 10000.0
 REFERRAL_BONUS = 500.0
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
+BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
+
+# In-memory storage
+USERS = {}
 
 def is_solana_address(text):
     return bool(re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", text.strip()))
 
+async def get_token_price(token_address):
+    url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
+    headers = {
+        "accept": "application/json",
+        "x-chain": "solana",
+        "X-API-KEY": BIRDEYE_API_KEY
+    }
+    response = await asyncio.to_thread(requests.get, url, headers=headers)
+    if response.status_code == 200:
+        data = response.json()
+        return float(data["data"]["value"])
+    return None
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /start command"""
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-    
-    if not user:
-        # Check if user was referred
-        referral_id = context.args[0] if context.args else None
-        user = User(
-            telegram_id=update.effective_user.id,
-            username=update.effective_user.username,
-            referred_by=int(referral_id) if referral_id else None
-        )
-        session.add(user)
-        
-        # Add referral bonus if applicable
-        if referral_id:
-            referrer = session.query(User).filter_by(telegram_id=int(referral_id)).first()
-            if referrer:
-                referrer.balance += REFERRAL_BONUS
-                await context.bot.send_message(
-                    chat_id=referral_id,
-                    text=f"🎉 You received {REFERRAL_BONUS} USD for referring a new user!"
-                )
-    
-    session.commit()
-    
+    uid = update.effective_user.id
+    if uid not in USERS:
+        USERS[uid] = {
+            'balance': INITIAL_BALANCE,
+            'holdings': {},
+            'realized_pnl': 0.0,
+            'history': [],
+            'context': {}
+        }
+
     keyboard = [
         [InlineKeyboardButton("🟢 Buy", callback_data="menu_buy"),
          InlineKeyboardButton("🔴 Sell", callback_data="menu_sell")],
@@ -71,126 +64,101 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("🔎 Check Wallet PnL", callback_data="menu_check_wallet_pnl")],
         [InlineKeyboardButton("👤 Track Wallet", callback_data="menu_track_wallet")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(
         "👋 Welcome to the Memecoin Paper Trading Bot!\nChoose an action:",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def handle_buy_start(query, context):
     """Handle buy menu selection"""
+    USERS[query.from_user.id]['context'] = {'mode': 'buy'}
     await query.message.reply_text("🔍 Enter the Solana token contract address to buy:")
 
 async def handle_sell_start(query, context):
     """Handle sell menu selection"""
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-    trades = session.query(Trade).filter_by(user_id=user.id, trade_type='buy').all()
-    
-    if not trades:
+    uid = query.from_user.id
+    user = USERS.get(uid)
+    tokens = list(user['holdings'].keys())
+    if not tokens:
         await query.message.reply_text("📭 No tokens to sell.")
         return
-    
-    # Get unique tokens
-    tokens = list(set(trade.token_address for trade in trades))
     keyboard = [[InlineKeyboardButton(token, callback_data=f"sell_token:{token}")] for token in tokens]
     await query.message.reply_text("📉 Choose token to sell:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_token_selected_for_sell(query, context):
     """Handle token selection for selling"""
+    uid = query.from_user.id
     token = query.data.split(":")[1]
+    USERS[uid]['context'] = {'mode': 'sell', 'token': token}
     await query.message.reply_text("💸 Enter the % of token to sell:")
 
-async def handle_buy_token(update, context, token_address, usd_amount):
+async def handle_buy_token(update, context, ca, usd_amount):
     """Handle token purchase"""
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-    
-    price = await TokenUtils.get_token_price(token_address)
+    uid = update.effective_user.id
+    user = USERS[uid]
+    price = await get_token_price(ca)
     if not price:
         await update.message.reply_text("❌ Token price fetch failed.")
         return
 
     qty = usd_amount / price
-    if usd_amount > user.balance:
+    if usd_amount > user['balance']:
         await update.message.reply_text("❌ Insufficient balance.")
         return
 
-    user.balance -= usd_amount
-    
-    # Create trade record
-    trade = Trade(
-        user_id=user.id,
-        token_address=token_address,
-        token_symbol=token_address[:8],  # Using first 8 chars as symbol
-        amount=qty,
-        price=price,
-        trade_type='buy'
-    )
-    session.add(trade)
-    session.commit()
+    user['balance'] -= usd_amount
 
-    await update.message.reply_text(f"✅ Bought {qty:.4f} of {token_address} at ${price:.4f}")
+    holding = user['holdings'].get(ca)
+    if holding:
+        total_cost = holding['qty'] * holding['avg_price'] + usd_amount
+        new_qty = holding['qty'] + qty
+        holding['avg_price'] = total_cost / new_qty
+        holding['qty'] = new_qty
+    else:
+        user['holdings'][ca] = {'qty': qty, 'avg_price': price}
 
-async def handle_sell_token(update, context, token_address, percent):
+    user['history'].append(f"🟢 Bought {qty:.4f} of {ca} at ${price:.4f}")
+    await update.message.reply_text(f"✅ Bought {qty:.4f} of {ca} at ${price:.4f}")
+
+async def handle_sell_token(update, context, token, percent):
     """Handle token sale"""
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-    
-    # Get all buy trades for this token
-    buy_trades = session.query(Trade).filter_by(
-        user_id=user.id,
-        token_address=token_address,
-        trade_type='buy'
-    ).all()
-    
-    if not buy_trades:
+    uid = update.effective_user.id
+    user = USERS[uid]
+    holding = user['holdings'].get(token)
+    if not holding:
         await update.message.reply_text("❌ You don't own this token.")
         return
 
-    price = await TokenUtils.get_token_price(token_address)
+    price = await get_token_price(token)
     if not price:
         await update.message.reply_text("❌ Token price fetch failed.")
         return
 
-    total_qty = sum(trade.amount for trade in buy_trades)
-    qty_to_sell = total_qty * (percent / 100)
-    
-    if qty_to_sell <= 0 or qty_to_sell > total_qty:
+    qty_to_sell = holding['qty'] * (percent / 100)
+    if qty_to_sell <= 0 or qty_to_sell > holding['qty']:
         await update.message.reply_text("❗ Invalid sell percentage.")
         return
 
     usd_value = qty_to_sell * price
-    avg_price = sum(trade.price * trade.amount for trade in buy_trades) / total_qty
-    pnl = (price - avg_price) * qty_to_sell
-    
-    user.balance += usd_value
-    
-    # Create sell trade record
-    trade = Trade(
-        user_id=user.id,
-        token_address=token_address,
-        token_symbol=token_address[:8],
-        amount=qty_to_sell,
-        price=price,
-        trade_type='sell'
-    )
-    session.add(trade)
-    session.commit()
+    pnl = (price - holding['avg_price']) * qty_to_sell
+    user['balance'] += usd_value
+    user['realized_pnl'] += pnl
+    holding['qty'] -= qty_to_sell
 
-    await update.message.reply_text(
-        f"✅ Sold {qty_to_sell:.4f} of {token_address} at ${price:.4f}\n"
-        f"💵 PnL: ${pnl:.2f}"
-    )
+    if holding['qty'] <= 0.00001:
+        del user['holdings'][token]
+
+    user['history'].append(f"🔴 Sold {qty_to_sell:.4f} of {token} at ${price:.4f} | PnL: ${pnl:.2f}")
+    await update.message.reply_text(f"✅ Sold {qty_to_sell:.4f} of {token} at ${price:.4f}\n💵 PnL: ${pnl:.2f}")
 
 async def show_balance(query, context):
     """Show user's balance"""
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-    
+    uid = query.from_user.id
+    user = USERS[uid]
+    balance = user['balance']
+
     msg = (
-        f"💵 Cash: ${user.balance:.2f}\n"
+        f"💵 Cash: ${balance:.2f}\n"
         f"📦 Holdings Value: Click to Check token PnL"
     )
     keyboard = [[InlineKeyboardButton("📈 View Token PnL", callback_data="menu_pnl")]]
@@ -198,58 +166,34 @@ async def show_balance(query, context):
 
 async def show_pnl_tokens(query, context):
     """Show list of tokens for PnL check"""
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-    trades = session.query(Trade).filter_by(user_id=user.id, trade_type='buy').all()
-    
-    if not trades:
+    uid = query.from_user.id
+    user = USERS.get(uid)
+    tokens = list(user['holdings'].keys())
+    if not tokens:
         await query.message.reply_text("📭 No active positions.")
         return
-    
-    tokens = list(set(trade.token_address for trade in trades))
     keyboard = [[InlineKeyboardButton(token, callback_data=f"pnl:{token}")] for token in tokens]
     await query.message.reply_text("📈 Click on a token to view PnL:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_token_pnl(query, context):
     """Show PnL for specific token"""
-    session = Session()
-    user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
+    uid = query.from_user.id
     token = query.data.split(":")[1]
-    
-    trades = session.query(Trade).filter_by(
-        user_id=user.id,
-        token_address=token
-    ).all()
-    
-    if not trades:
-        await query.message.reply_text("❌ No trades found for this token.")
+    user = USERS.get(uid)
+    holding = user['holdings'][token]
+    price = await get_token_price(token)
+    if not price:
+        await query.message.reply_text("❌ Couldn't fetch price.")
         return
 
-    buy_trades = [t for t in trades if t.trade_type == 'buy']
-    sell_trades = [t for t in trades if t.trade_type == 'sell']
-    
-    total_bought = sum(t.amount for t in buy_trades)
-    total_sold = sum(t.amount for t in sell_trades)
-    current_holding = total_bought - total_sold
-    
-    if current_holding <= 0:
-        await query.message.reply_text("❌ No active position for this token.")
-        return
-
-    avg_price = sum(t.price * t.amount for t in buy_trades) / total_bought
-    current_price = await TokenUtils.get_token_price(token)
-    
-    if not current_price:
-        await query.message.reply_text("❌ Couldn't fetch current price.")
-        return
-
-    pnl = (current_price - avg_price) * current_holding
-    
+    qty = holding['qty']
+    avg = holding['avg_price']
+    pnl = (price - avg) * qty
     msg = (
         f"📊 Token: {token}\n"
-        f"• Qty: {current_holding:.4f}\n"
-        f"• Avg Price: ${avg_price:.4f}\n"
-        f"• Current Price: ${current_price:.4f}\n"
+        f"• Qty: {qty:.4f}\n"
+        f"• Avg Price: ${avg:.4f}\n"
+        f"• Current Price: ${price:.4f}\n"
         f"• PnL: ${pnl:.2f}"
     )
     await query.message.reply_text(msg)
@@ -269,32 +213,54 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     message = ' '.join(context.args)
-    session = Session()
-    users = session.query(User).all()
-    
     sent = 0
-    for user in users:
+    for user_id in USERS:
         try:
-            await context.bot.send_message(chat_id=user.telegram_id, text=message)
+            await context.bot.send_message(chat_id=user_id, text=message)
             sent += 1
         except Exception as e:
-            logger.error(f"Failed to send broadcast to user {user.telegram_id}: {e}")
+            logger.error(f"Failed to send broadcast to user {user_id}: {e}")
     
     await update.message.reply_text(f"✅ Message sent to {sent} users.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages"""
+    uid = update.effective_user.id
     text = update.message.text.strip()
-    
+    user = USERS.get(uid)
+    if not user:
+        await start(update, context)
+        return
+
+    ctx = user['context']
+    if 'mode' in ctx:
+        if ctx['mode'] == 'buy':
+            if is_solana_address(text):
+                ctx['ca'] = text
+                await update.message.reply_text("💵 How much USD to invest?")
+            elif 'ca' in ctx:
+                try:
+                    usd = float(text)
+                    await handle_buy_token(update, context, ctx['ca'], usd)
+                    user['context'] = {}
+                except:
+                    await update.message.reply_text("❌ Enter a valid USD amount.")
+            return
+        elif ctx['mode'] == 'sell' and 'token' in ctx:
+            try:
+                percent = float(text)
+                await handle_sell_token(update, context, ctx['token'], percent)
+                user['context'] = {}
+            except:
+                await update.message.reply_text("❌ Enter a valid percentage.")
+            return
+
     if is_solana_address(text):
         keyboard = [
             [InlineKeyboardButton("🟢 Buy", callback_data=f"ca_buy:{text}"),
              InlineKeyboardButton("🔴 Sell", callback_data=f"ca_sell:{text}")]
         ]
-        await update.message.reply_text(
-            "Detected token address. Choose action:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await update.message.reply_text("Detected token address. Choose action:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await start(update, context)
 
@@ -317,10 +283,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("pnl:"):
         await show_token_pnl(query, context)
     elif data.startswith("ca_buy:"):
-        token = data.split(":")[1]
+        ca = data.split(":")[1]
+        USERS[query.from_user.id]['context'] = {'mode': 'buy', 'ca': ca}
         await query.message.reply_text("💵 How much USD to invest?")
     elif data.startswith("ca_sell:"):
         token = data.split(":")[1]
+        USERS[query.from_user.id]['context'] = {'mode': 'sell', 'token': token}
         await query.message.reply_text("💸 Enter the % of token to sell:")
     elif data == "menu_copy_trade":
         await handle_coming_soon(query, context, "Copy Trade")
