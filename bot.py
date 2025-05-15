@@ -28,7 +28,8 @@ engine = init_db(os.getenv('DATABASE_URL'))
 Session = sessionmaker(bind=engine)
 
 # Constants
-INITIAL_BALANCE = 10000.0
+INITIAL_BALANCE = 1000.0
+REFERRAL_BONUS = 500.0
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
 
@@ -65,6 +66,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = Session()
         user = session.query(User).filter_by(telegram_id=uid).first()
         
+        # Check for referral
+        referral_id = None
+        if context.args and context.args[0].startswith('ref_'):
+            try:
+                referral_id = int(context.args[0].split('_')[1])
+                if referral_id == uid:  # Prevent self-referral
+                    referral_id = None
+            except:
+                referral_id = None
+        
         if not user:
             user = User(
                 telegram_id=uid,
@@ -73,10 +84,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 holdings={},
                 realized_pnl=0.0,
                 history=[],
-                context={}
+                context={},
+                referral_id=referral_id
             )
             session.add(user)
             session.commit()
+            
+            # If referred, add bonus to both users
+            if referral_id:
+                referrer = session.query(User).filter_by(telegram_id=referral_id).first()
+                if referrer:
+                    # Add bonus to referrer
+                    referrer.balance += REFERRAL_BONUS
+                    referrer.history = referrer.history or []
+                    referrer.history.append(f"🎁 Referral bonus: +${REFERRAL_BONUS}")
+                    
+                    # Add bonus to new user
+                    user.balance += REFERRAL_BONUS
+                    user.history = user.history or []
+                    user.history.append(f"🎁 Referral bonus: +${REFERRAL_BONUS}")
+                    
+                    session.commit()
         
         # Initialize in-memory user data
         USERS[uid] = {
@@ -84,8 +112,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'holdings': user.holdings or {},
             'realized_pnl': user.realized_pnl,
             'history': user.history or [],
-            'context': user.context or {}
+            'context': user.context or {},
+            'referral_id': user.referral_id
         }
+
+        # Generate referral link
+        bot_username = (await context.bot.get_me()).username
+        referral_link = f"https://t.me/{bot_username}?start=ref_{uid}"
 
         keyboard = [
             [InlineKeyboardButton("🟢 Buy", callback_data="menu_buy"),
@@ -94,10 +127,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("📈 PnL", callback_data="menu_pnl")],
             [InlineKeyboardButton("🔁 Copy Trade", callback_data="menu_copy_trade"),
              InlineKeyboardButton("🔎 Check Wallet PnL", callback_data="menu_check_wallet_pnl")],
-            [InlineKeyboardButton("🚀 Real Trading Bots", callback_data="menu_promotions")]
+            [InlineKeyboardButton("🚀 Real Trading Bots", callback_data="menu_promotions")],
+            [InlineKeyboardButton("👥 Invite Friends", callback_data="menu_referral")]
         ]
+        
+        welcome_text = (
+            "👋 Welcome to the Memecoin Paper Trading Bot!\n\n"
+            f"💰 Initial Balance: ${INITIAL_BALANCE}\n"
+            f"🎁 Referral Bonus: ${REFERRAL_BONUS}\n\n"
+            "Choose an action:"
+        )
+        
         await update.message.reply_text(
-            "👋 Welcome to the Memecoin Paper Trading Bot!\nChoose an action:",
+            welcome_text,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
@@ -326,6 +368,35 @@ async def show_promotions(message):
     )
     await message.reply_text(promo_text)
 
+async def show_referral_info(query, context):
+    """Show referral information and link"""
+    try:
+        uid = query.from_user.id
+        user = USERS[uid]
+        
+        # Generate referral link
+        bot_username = (await context.bot.get_me()).username
+        referral_link = f"https://t.me/{bot_username}?start=ref_{uid}"
+        
+        # Count referrals
+        session = Session()
+        referral_count = session.query(User).filter_by(referral_id=uid).count()
+        
+        msg = (
+            "🎁 Referral Program\n\n"
+            f"• Get ${REFERRAL_BONUS} for each friend you invite\n"
+            f"• Your friends also get ${REFERRAL_BONUS} bonus\n"
+            f"• Total referrals: {referral_count}\n\n"
+            "Share your referral link:\n"
+            f"`{referral_link}`\n\n"
+            "💡 Copy and share this link with your friends!"
+        )
+        
+        await query.message.reply_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in show referral info: {e}")
+        await query.message.reply_text("❌ An error occurred. Please try again.")
+
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Broadcast message to all users (admin only)"""
     try:
@@ -471,6 +542,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_coming_soon(query, context, "Check Wallet PnL")
         elif data == "menu_promotions":
             await show_promotions(query.message)
+        elif data == "menu_referral":
+            await show_referral_info(query, context)
     except Exception as e:
         logger.error(f"Error in button handler: {e}")
         await update.callback_query.message.reply_text("❌ An error occurred. Please try again.")

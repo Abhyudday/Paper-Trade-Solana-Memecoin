@@ -14,12 +14,12 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(BigInteger, unique=True)
     username = Column(String)
-    balance = Column(Float, default=10000.0)  # Initial balance 10k USD
+    balance = Column(Float, default=1000.0)  # Initial balance 1k USD
     holdings = Column(JSON, default={})  # Store holdings as JSON
     realized_pnl = Column(Float, default=0.0)
     history = Column(JSON, default=[])  # Store trade history as JSON
     context = Column(JSON, default={})  # Store current context as JSON
-    referred_by = Column(BigInteger, nullable=True)
+    referral_id = Column(BigInteger, nullable=True)  # Renamed from referred_by
     created_at = Column(DateTime, default=datetime.utcnow)
     last_broadcast_message_id = Column(Integer, nullable=True)  # Store last broadcast message ID
     
@@ -66,6 +66,25 @@ def init_db(database_url):
                 conn.execute(add_column_query)
                 conn.commit()
                 logger.info("Successfully added last_broadcast_message_id column")
+
+            # Rename referred_by to referral_id if it exists
+            check_referred_by = text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='users' 
+                AND column_name='referred_by'
+            """)
+            result = conn.execute(check_referred_by).fetchone()
+            
+            if result:
+                logger.info("Renaming referred_by column to referral_id")
+                rename_column_query = text("""
+                    ALTER TABLE users 
+                    RENAME COLUMN referred_by TO referral_id
+                """)
+                conn.execute(rename_column_query)
+                conn.commit()
+                logger.info("Successfully renamed referred_by to referral_id")
         except Exception as e:
             logger.error(f"Error during database migration: {e}")
             raise
