@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, BigInteger, JSON
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, BigInteger, JSON, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
@@ -49,19 +49,21 @@ def init_db(database_url):
     with engine.connect() as conn:
         try:
             # Check if last_broadcast_message_id column exists
-            result = conn.execute("""
+            check_column_query = text("""
                 SELECT column_name 
                 FROM information_schema.columns 
                 WHERE table_name='users' 
                 AND column_name='last_broadcast_message_id'
-            """).fetchone()
+            """)
+            result = conn.execute(check_column_query).fetchone()
             
             if not result:
                 logger.info("Adding last_broadcast_message_id column to users table")
-                conn.execute("""
+                add_column_query = text("""
                     ALTER TABLE users 
                     ADD COLUMN last_broadcast_message_id INTEGER
                 """)
+                conn.execute(add_column_query)
                 conn.commit()
                 logger.info("Successfully added last_broadcast_message_id column")
         except Exception as e:
