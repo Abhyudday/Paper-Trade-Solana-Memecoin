@@ -36,42 +36,38 @@ BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
 TROJAN_BOT_LINK = "https://t.me/solana_trojanbot?start=r-abhyudday"
 GMGN_BOT_LINK = "https://t.me/GMGN_sol_bot?start=i_NEu2DbZx"
 
+# In-memory user data
+USERS = {}
+
 def is_solana_address(text):
     return bool(re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", text.strip()))
 
 async def get_token_price(token_address):
+    url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
+    headers = {
+        "accept": "application/json",
+        "x-chain": "solana",
+        "X-API-KEY": BIRDEYE_API_KEY
+    }
     try:
-        logger.info(f"Fetching price for token: {token_address}")
-        url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
-        headers = {
-            "accept": "application/json",
-            "x-chain": "solana",
-            "X-API-KEY": BIRDEYE_API_KEY
-        }
         response = await asyncio.to_thread(requests.get, url, headers=headers)
-        logger.info(f"API Response status: {response.status_code}")
-        
         if response.status_code == 200:
             data = response.json()
-            price = float(data["data"]["value"])
-            logger.info(f"Successfully fetched price: ${price}")
-            return price
-        else:
-            logger.error(f"API Error: {response.status_code} - {response.text}")
-            return None
+            return float(data["data"]["value"])
     except Exception as e:
-        logger.error(f"Error fetching token price: {str(e)}")
-        return None
+        logger.error(f"Error fetching token price: {e}")
+    return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /start command"""
     try:
+        uid = update.effective_user.id
         session = Session()
-        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
+        user = session.query(User).filter_by(telegram_id=uid).first()
         
         if not user:
             user = User(
-                telegram_id=update.effective_user.id,
+                telegram_id=uid,
                 username=update.effective_user.username,
                 balance=INITIAL_BALANCE,
                 holdings={},
@@ -81,6 +77,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             session.add(user)
             session.commit()
+        
+        # Initialize in-memory user data
+        USERS[uid] = {
+            'balance': user.balance,
+            'holdings': user.holdings or {},
+            'realized_pnl': user.realized_pnl,
+            'history': user.history or [],
+            'context': user.context or {}
+        }
 
         keyboard = [
             [InlineKeyboardButton("🟢 Buy", callback_data="menu_buy"),
@@ -102,10 +107,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_buy_start(query, context):
     """Handle buy menu selection"""
     try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-        user.context = {'mode': 'buy'}
-        session.commit()
+        uid = query.from_user.id
+        USERS[uid]['context'] = {'mode': 'buy'}
         await query.message.reply_text("🔍 Enter the Solana token contract address to buy:")
     except Exception as e:
         logger.error(f"Error in buy start: {e}")
@@ -114,9 +117,9 @@ async def handle_buy_start(query, context):
 async def handle_sell_start(query, context):
     """Handle sell menu selection"""
     try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-        tokens = list((user.holdings or {}).keys())
+        uid = query.from_user.id
+        user = USERS.get(uid)
+        tokens = list(user['holdings'].keys())
         if not tokens:
             await query.message.reply_text("📭 No tokens to sell.")
             return
@@ -129,11 +132,9 @@ async def handle_sell_start(query, context):
 async def handle_token_selected_for_sell(query, context):
     """Handle token selection for selling"""
     try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
+        uid = query.from_user.id
         token = query.data.split(":")[1]
-        user.context = {'mode': 'sell', 'token': token}
-        session.commit()
+        USERS[uid]['context'] = {'mode': 'sell', 'token': token}
         await query.message.reply_text("💸 Enter the % of token to sell:")
     except Exception as e:
         logger.error(f"Error in token selection: {e}")
@@ -142,82 +143,56 @@ async def handle_token_selected_for_sell(query, context):
 async def handle_buy_token(update, context, ca, usd_amount):
     """Handle token purchase"""
     try:
-        logger.info(f"=== Starting handle_buy_token ===")
-        logger.info(f"Parameters - ca: {ca}, usd_amount: {usd_amount}")
+        uid = update.effective_user.id
+        user = USERS[uid]
         
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
-        logger.info(f"Found user: {user.telegram_id}")
-        
-        # Get token price
-        logger.info("Fetching token price...")
         price = await get_token_price(ca)
         if not price:
-            logger.error(f"Failed to fetch price for token {ca}")
             await update.message.reply_text("❌ Token price fetch failed.")
             return
 
-        logger.info(f"Token price fetched: ${price}")
-
-        # Calculate quantity
         qty = usd_amount / price
-        logger.info(f"Calculated quantity: {qty}")
-
-        if usd_amount > user.balance:
-            logger.warning(f"Insufficient balance. User has ${user.balance}, tried to spend ${usd_amount}")
-            await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
+        if usd_amount > user['balance']:
+            await update.message.reply_text(f"❌ Insufficient balance. You have ${user['balance']:.2f}")
             return
 
-        # Update user balance
-        user.balance -= usd_amount
-        logger.info(f"Updated balance: ${user.balance}")
+        user['balance'] -= usd_amount
 
-        # Update holdings
-        holdings = user.holdings or {}
-        holding = holdings.get(ca)
+        holding = user['holdings'].get(ca)
         if holding:
             total_cost = holding['qty'] * holding['avg_price'] + usd_amount
             new_qty = holding['qty'] + qty
             holding['avg_price'] = total_cost / new_qty
             holding['qty'] = new_qty
-            logger.info(f"Updated existing holding. New quantity: {new_qty}, New avg price: {holding['avg_price']}")
         else:
-            holdings[ca] = {'qty': qty, 'avg_price': price}
-            logger.info(f"Created new holding. Quantity: {qty}, Price: {price}")
-        
-        user.holdings = holdings
-        user.history = user.history or []
-        user.history.append(f"🟢 Bought {qty:.4f} of {ca} at ${price:.4f}")
-        
-        logger.info("Committing changes to database...")
-        session.commit()
-        logger.info("Database changes committed successfully")
+            user['holdings'][ca] = {'qty': qty, 'avg_price': price}
 
-        # Send confirmation message
-        confirmation_msg = (
-            f"✅ Bought {qty:.4f} of {ca} at ${price:.4f}\n"
-            f"💵 Remaining Balance: ${user.balance:.2f}"
-        )
-        logger.info("Sending confirmation message...")
-        await update.message.reply_text(confirmation_msg)
-        logger.info("Confirmation message sent")
+        user['history'].append(f"🟢 Bought {qty:.4f} of {ca} at ${price:.4f}")
         
-        logger.info(f"Buy token process completed successfully for user {update.effective_user.id}")
+        # Update database
+        session = Session()
+        db_user = session.query(User).filter_by(telegram_id=uid).first()
+        db_user.balance = user['balance']
+        db_user.holdings = user['holdings']
+        db_user.history = user['history']
+        session.commit()
+
+        await update.message.reply_text(
+            f"✅ Bought {qty:.4f} of {ca} at ${price:.4f}\n"
+            f"💵 Remaining Balance: ${user['balance']:.2f}"
+        )
     except Exception as e:
-        logger.error(f"Error in buy token: {str(e)}")
+        logger.error(f"Error in buy token: {e}")
         await update.message.reply_text("❌ An error occurred during the trade. Please try again.")
         session.rollback()
-    finally:
-        logger.info("=== Ending handle_buy_token ===")
 
 async def handle_sell_token(update, context, token, percent):
     """Handle token sale"""
     try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
+        uid = update.effective_user.id
+        user = USERS[uid]
         
-        holdings = user.holdings or {}
-        holding = holdings.get(token)
+        holding = user['holdings'].get(token)
         if not holding:
             await update.message.reply_text("❌ You don't own this token.")
             return
@@ -234,22 +209,28 @@ async def handle_sell_token(update, context, token, percent):
 
         usd_value = qty_to_sell * price
         pnl = (price - holding['avg_price']) * qty_to_sell
-        user.balance += usd_value
-        user.realized_pnl += pnl
+        user['balance'] += usd_value
+        user['realized_pnl'] += pnl
         holding['qty'] -= qty_to_sell
 
         if holding['qty'] <= 0.00001:
-            del holdings[token]
+            del user['holdings'][token]
         
-        user.holdings = holdings
-        user.history = user.history or []
-        user.history.append(f"🔴 Sold {qty_to_sell:.4f} of {token} at ${price:.4f} | PnL: ${pnl:.2f}")
+        user['history'].append(f"🔴 Sold {qty_to_sell:.4f} of {token} at ${price:.4f} | PnL: ${pnl:.2f}")
+        
+        # Update database
+        session = Session()
+        db_user = session.query(User).filter_by(telegram_id=uid).first()
+        db_user.balance = user['balance']
+        db_user.holdings = user['holdings']
+        db_user.realized_pnl = user['realized_pnl']
+        db_user.history = user['history']
         session.commit()
 
         await update.message.reply_text(
             f"✅ Sold {qty_to_sell:.4f} of {token} at ${price:.4f}\n"
             f"💵 PnL: ${pnl:.2f}\n"
-            f"💰 New Balance: ${user.balance:.2f}"
+            f"💰 New Balance: ${user['balance']:.2f}"
         )
     except Exception as e:
         logger.error(f"Error in sell token: {e}")
@@ -259,11 +240,11 @@ async def handle_sell_token(update, context, token, percent):
 async def show_balance(query, context):
     """Show user's balance"""
     try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
+        uid = query.from_user.id
+        user = USERS[uid]
         
         msg = (
-            f"💵 Cash: ${user.balance:.2f}\n"
+            f"💵 Cash: ${user['balance']:.2f}\n"
             f"📦 Holdings Value: Click to Check token PnL"
         )
         keyboard = [[InlineKeyboardButton("📈 View Token PnL", callback_data="menu_pnl")]]
@@ -275,9 +256,9 @@ async def show_balance(query, context):
 async def show_pnl_tokens(query, context):
     """Show list of tokens for PnL check"""
     try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-        tokens = list((user.holdings or {}).keys())
+        uid = query.from_user.id
+        user = USERS[uid]
+        tokens = list(user['holdings'].keys())
         if not tokens:
             await query.message.reply_text("📭 No active positions.")
             return
@@ -290,10 +271,10 @@ async def show_pnl_tokens(query, context):
 async def show_token_pnl(query, context):
     """Show PnL for specific token"""
     try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
+        uid = query.from_user.id
         token = query.data.split(":")[1]
-        holding = (user.holdings or {}).get(token)
+        user = USERS[uid]
+        holding = user['holdings'].get(token)
         if not holding:
             await query.message.reply_text("❌ No holdings found for this token.")
             return
@@ -405,65 +386,44 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages"""
     try:
-        logger.info("=== Starting handle_message ===")
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
+        uid = update.effective_user.id
+        text = update.message.text.strip()
+        user = USERS.get(uid)
+        
         if not user:
-            logger.info("User not found, starting new user flow")
             await start(update, context)
             return
 
-        text = update.message.text.strip()
-        ctx = user.context or {}
-        
-        logger.info(f"Received message: {text} from user {update.effective_user.id}")
-        logger.info(f"Current context: {ctx}")
-        
+        ctx = user['context']
         if 'mode' in ctx:
-            logger.info(f"Processing message in mode: {ctx['mode']}")
             if ctx['mode'] == 'buy':
                 if is_solana_address(text):
-                    logger.info(f"Valid token address received: {text}")
                     ctx['ca'] = text
-                    user.context = ctx
-                    session.commit()
                     await update.message.reply_text("💵 How much USD to invest?")
                 elif 'ca' in ctx:
-                    logger.info(f"Processing USD amount for token: {ctx['ca']}")
                     try:
                         usd = float(text)
-                        logger.info(f"Parsed USD amount: {usd}")
-                        
                         if usd <= 0:
-                            logger.warning(f"Invalid amount: {usd} (must be positive)")
                             await update.message.reply_text("❌ Please enter a positive amount.")
                             return
-                            
-                        if usd > user.balance:
-                            logger.warning(f"Insufficient balance. User has ${user.balance}, tried to spend ${usd}")
-                            await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
-                            return
-                            
-                        logger.info(f"Calling handle_buy_token with ca={ctx['ca']}, usd={usd}")
                         await handle_buy_token(update, context, ctx['ca'], usd)
-                        logger.info("Buy token process completed, clearing context")
-                        user.context = {}
-                        session.commit()
-                    except ValueError as ve:
-                        logger.error(f"Invalid USD amount: {text}, error: {str(ve)}")
+                        user['context'] = {}
+                    except ValueError:
                         await update.message.reply_text("❌ Please enter a valid number.")
                     except Exception as e:
-                        logger.error(f"Error processing buy amount: {str(e)}")
+                        logger.error(f"Error processing buy amount: {e}")
                         await update.message.reply_text("❌ An error occurred. Please try again.")
                 return
             elif ctx['mode'] == 'sell' and 'token' in ctx:
                 try:
                     percent = float(text)
                     await handle_sell_token(update, context, ctx['token'], percent)
-                    user.context = {}
-                    session.commit()
-                except:
-                    await update.message.reply_text("❌ Enter a valid percentage.")
+                    user['context'] = {}
+                except ValueError:
+                    await update.message.reply_text("❌ Please enter a valid percentage.")
+                except Exception as e:
+                    logger.error(f"Error processing sell percentage: {e}")
+                    await update.message.reply_text("❌ An error occurred. Please try again.")
                 return
 
         if is_solana_address(text):
@@ -475,10 +435,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await start(update, context)
     except Exception as e:
-        logger.error(f"Error in handle message: {str(e)}")
+        logger.error(f"Error in handle message: {e}")
         await update.message.reply_text("❌ An error occurred. Please try again.")
-    finally:
-        logger.info("=== Ending handle_message ===")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button callbacks"""
@@ -500,18 +458,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("pnl:"):
             await show_token_pnl(query, context)
         elif data.startswith("ca_buy:"):
-            session = Session()
-            user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
             ca = data.split(":")[1]
-            user.context = {'mode': 'buy', 'ca': ca}
-            session.commit()
+            USERS[query.from_user.id]['context'] = {'mode': 'buy', 'ca': ca}
             await query.message.reply_text("💵 How much USD to invest?")
         elif data.startswith("ca_sell:"):
-            session = Session()
-            user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
             token = data.split(":")[1]
-            user.context = {'mode': 'sell', 'token': token}
-            session.commit()
+            USERS[query.from_user.id]['context'] = {'mode': 'sell', 'token': token}
             await query.message.reply_text("💸 Enter the % of token to sell:")
         elif data == "menu_copy_trade":
             await handle_coming_soon(query, context, "Copy Trade")
