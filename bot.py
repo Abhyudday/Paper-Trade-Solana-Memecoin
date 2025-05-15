@@ -138,7 +138,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("📈 PnL", callback_data="menu_pnl")],
             [InlineKeyboardButton("🔁 Copy Trade", callback_data="menu_copy_trade"),
              InlineKeyboardButton("🔎 Check Wallet PnL", callback_data="menu_check_wallet_pnl")],
-            [InlineKeyboardButton("📊 View Recent Trades", callback_data="menu_track_wallet")]
+            [InlineKeyboardButton("📊 Recent Trades", callback_data="menu_recent_trades")]
         ]
         await update.message.reply_text(
             "👋 Welcome to the Memecoin Paper Trading Bot!\nChoose an action:",
@@ -668,7 +668,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_coming_soon(query, context, "Copy Trade")
         elif data == "menu_check_wallet_pnl":
             await handle_coming_soon(query, context, "Check Wallet PnL")
-        elif data == "menu_track_wallet":
+        elif data == "menu_recent_trades":
             await handle_recent_transactions(query, context)
         elif data == "view_my_trades":
             await handle_my_trades(query, context)
