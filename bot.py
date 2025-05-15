@@ -36,9 +36,6 @@ BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
 # Global application instance
 application = None
 
-# Add this after the other global variables
-LAST_BROADCAST = None
-
 def signal_handler(signum, frame):
     """Handle shutdown signals"""
     logger.info("Received shutdown signal. Cleaning up...")
@@ -310,7 +307,6 @@ async def handle_coming_soon(query, context, feature):
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Broadcast message to all users (admin only)"""
-    global LAST_BROADCAST
     try:
         if update.effective_user.id != ADMIN_ID:
             await update.message.reply_text("🚫 You are not authorized to use this command.")
@@ -321,63 +317,46 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         message = ' '.join(context.args)
-        LAST_BROADCAST = message  # Store the last broadcast message
         session = Session()
         users = session.query(User).all()
         
         sent = 0
         for user in users:
             try:
-                await context.bot.send_message(chat_id=user.telegram_id, text=message)
-                sent += 1
+                if user.last_broadcast_message_id:
+                    # Try to edit existing message
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=user.telegram_id,
+                            message_id=user.last_broadcast_message_id,
+                            text=message
+                        )
+                        sent += 1
+                    except Exception as e:
+                        # If edit fails (e.g., message too old), send new message
+                        new_message = await context.bot.send_message(
+                            chat_id=user.telegram_id,
+                            text=message
+                        )
+                        user.last_broadcast_message_id = new_message.message_id
+                        sent += 1
+                else:
+                    # Send new message if no previous broadcast exists
+                    new_message = await context.bot.send_message(
+                        chat_id=user.telegram_id,
+                        text=message
+                    )
+                    user.last_broadcast_message_id = new_message.message_id
+                    sent += 1
             except Exception as e:
                 logger.error(f"Failed to send broadcast to user {user.telegram_id}: {e}")
         
-        await update.message.reply_text(f"✅ Message sent to {sent} users.")
+        session.commit()
+        await update.message.reply_text(f"✅ Message updated for {sent} users.")
     except Exception as e:
         logger.error(f"Error in broadcast: {e}")
         await update.message.reply_text("❌ An error occurred during broadcast.")
-
-async def edit_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Edit the last broadcast message (admin only)"""
-    global LAST_BROADCAST
-    try:
-        if update.effective_user.id != ADMIN_ID:
-            await update.message.reply_text("🚫 You are not authorized to use this command.")
-            return
-        
-        if not LAST_BROADCAST:
-            await update.message.reply_text("❌ No previous broadcast message found.")
-            return
-        
-        if not context.args:
-            await update.message.reply_text(
-                f"📝 Current broadcast message:\n\n{LAST_BROADCAST}\n\n"
-                "To edit, use: /editbroadcast Your new message here"
-            )
-            return
-        
-        new_message = ' '.join(context.args)
-        session = Session()
-        users = session.query(User).all()
-        
-        sent = 0
-        for user in users:
-            try:
-                # Send the new message
-                await context.bot.send_message(
-                    chat_id=user.telegram_id,
-                    text=f"📢 Broadcast Update:\n\n{new_message}"
-                )
-                sent += 1
-            except Exception as e:
-                logger.error(f"Failed to send edited broadcast to user {user.telegram_id}: {e}")
-        
-        LAST_BROADCAST = new_message  # Update the last broadcast message
-        await update.message.reply_text(f"✅ Updated message sent to {sent} users.")
-    except Exception as e:
-        logger.error(f"Error in edit broadcast: {e}")
-        await update.message.reply_text("❌ An error occurred while editing broadcast.")
+        session.rollback()
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages"""
@@ -498,7 +477,6 @@ def main():
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("broadcast", broadcast))
-    application.add_handler(CommandHandler("editbroadcast", edit_broadcast))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     

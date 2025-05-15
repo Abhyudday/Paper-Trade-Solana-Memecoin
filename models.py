@@ -19,6 +19,7 @@ class User(Base):
     context = Column(JSON, default={})  # Store current context as JSON
     referred_by = Column(BigInteger, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    last_broadcast_message_id = Column(Integer, nullable=True)  # Store last broadcast message ID
     
     trades = relationship("Trade", back_populates="user", cascade="all, delete-orphan")
 
