@@ -29,23 +29,12 @@ Session = sessionmaker(bind=engine)
 
 # Constants
 INITIAL_BALANCE = 10000.0
-REFERRAL_BONUS = 500.0
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
 
 # Promotional links
 TROJAN_BOT_LINK = "https://t.me/solana_trojanbot?start=r-abhyudday"
 GMGN_BOT_LINK = "https://t.me/GMGN_sol_bot?start=i_NEu2DbZx"
-
-# Global application instance
-application = None
-
-def signal_handler(signum, frame):
-    """Handle shutdown signals"""
-    logger.info("Received shutdown signal. Cleaning up...")
-    if application:
-        application.stop()
-    sys.exit(0)
 
 def is_solana_address(text):
     return bool(re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", text.strip()))
@@ -65,24 +54,6 @@ async def get_token_price(token_address):
     except Exception as e:
         logger.error(f"Error fetching token price: {e}")
     return None
-
-async def show_promotions(message):
-    """Show promotional messages for other bots"""
-    promo_text = (
-        "🚀 Want to trade real tokens? Check out these amazing bots:\n\n"
-        "🤖 Trojan on Solana\n"
-        "• Advanced trading features\n"
-        "• Real-time price alerts\n"
-        "• Fee rebates available\n"
-        f"• Start here: {TROJAN_BOT_LINK}\n\n"
-        "🤖 GMGN Sniper Bot\n"
-        "• Fast token sniping\n"
-        "• Multiple backup bots\n"
-        "• Fee rebates available\n"
-        f"• Start here: {GMGN_BOT_LINK}\n\n"
-        "💡 Use these bots to trade real tokens and get fee rebates!"
-    )
-    await message.reply_text(promo_text)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /start command"""
@@ -172,6 +143,10 @@ async def handle_buy_token(update, context, ca, usd_amount):
             return
 
         qty = usd_amount / price
+        if usd_amount > user.balance:
+            await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
+            return
+
         user.balance -= usd_amount
 
         holdings = user.holdings or {}
@@ -250,19 +225,9 @@ async def show_balance(query, context):
         session = Session()
         user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
         
-        # Calculate total holdings value
-        total_holdings = 0
-        holdings = user.holdings or {}
-        for token, holding in holdings.items():
-            price = await get_token_price(token)
-            if price:
-                total_holdings += holding['qty'] * price
-
         msg = (
             f"💵 Cash: ${user.balance:.2f}\n"
-            f"📦 Holdings Value: ${total_holdings:.2f}\n"
-            f"💰 Total Value: ${(user.balance + total_holdings):.2f}\n"
-            f"📈 Realized PnL: ${user.realized_pnl:.2f}"
+            f"📦 Holdings Value: Click to Check token PnL"
         )
         keyboard = [[InlineKeyboardButton("📈 View Token PnL", callback_data="menu_pnl")]]
         await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -325,9 +290,26 @@ async def handle_coming_soon(query, context, feature):
         f"🤖 GMGN Sniper Bot: {GMGN_BOT_LINK}"
     )
 
+async def show_promotions(message):
+    """Show promotional messages for other bots"""
+    promo_text = (
+        "🚀 Want to trade real tokens? Check out these amazing bots:\n\n"
+        "🤖 Trojan on Solana\n"
+        "• Advanced trading features\n"
+        "• Real-time price alerts\n"
+        "• Fee rebates available\n"
+        f"• Start here: {TROJAN_BOT_LINK}\n\n"
+        "🤖 GMGN Sniper Bot\n"
+        "• Fast token sniping\n"
+        "• Multiple backup bots\n"
+        "• Fee rebates available\n"
+        f"• Start here: {GMGN_BOT_LINK}\n\n"
+        "💡 Use these bots to trade real tokens and get fee rebates!"
+    )
+    await message.reply_text(promo_text)
+
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Broadcast message to all users (admin only)"""
-    session = None
     try:
         if update.effective_user.id != ADMIN_ID:
             await update.message.reply_text("🚫 You are not authorized to use this command.")
@@ -350,7 +332,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for user in users:
             try:
                 if user.last_broadcast_message_id:
-                    # Try to edit existing message
                     try:
                         await context.bot.edit_message_text(
                             chat_id=user.telegram_id,
@@ -358,29 +339,22 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             text=message
                         )
                         sent += 1
-                        logger.info(f"Successfully edited message for user {user.telegram_id}")
                     except Exception as e:
-                        # If edit fails (e.g., message too old), send new message
-                        logger.warning(f"Failed to edit message for user {user.telegram_id}: {str(e)}")
                         new_message = await context.bot.send_message(
                             chat_id=user.telegram_id,
                             text=message
                         )
                         user.last_broadcast_message_id = new_message.message_id
                         sent += 1
-                        logger.info(f"Sent new message to user {user.telegram_id}")
                 else:
-                    # Send new message if no previous broadcast exists
                     new_message = await context.bot.send_message(
                         chat_id=user.telegram_id,
                         text=message
                     )
                     user.last_broadcast_message_id = new_message.message_id
                     sent += 1
-                    logger.info(f"Sent first message to user {user.telegram_id}")
             except Exception as e:
                 failed += 1
-                logger.error(f"Failed to send broadcast to user {user.telegram_id}: {str(e)}")
         
         session.commit()
         status_message = f"✅ Message updated for {sent} users."
@@ -388,10 +362,8 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_message += f"\n❌ Failed to update {failed} users."
         await update.message.reply_text(status_message)
     except Exception as e:
-        logger.error(f"Error in broadcast: {str(e)}")
-        if session:
-            session.rollback()
-        await update.message.reply_text(f"❌ An error occurred during broadcast: {str(e)}")
+        logger.error(f"Error in broadcast: {e}")
+        await update.message.reply_text("❌ An error occurred during broadcast.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages"""
@@ -488,12 +460,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot"""
-    global application
-    
-    # Set up signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
     # Create application
     application = Application.builder().token(os.getenv('BOT_TOKEN')).build()
     
