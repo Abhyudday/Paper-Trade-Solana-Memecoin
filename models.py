@@ -8,30 +8,33 @@ Base = declarative_base()
 class User(Base):
     __tablename__ = 'users'
     
-    id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_id = Column(Integer, unique=True, nullable=False)
     username = Column(String)
     balance = Column(Float, default=10000.0)  # Initial balance 10k USD
     referred_by = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    trades = relationship("Trade", back_populates="user")
+    trades = relationship("Trade", back_populates="user", cascade="all, delete-orphan")
 
 class Trade(Base):
     __tablename__ = 'trades'
     
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
-    token_address = Column(String)
-    token_symbol = Column(String)
-    amount = Column(Float)
-    price = Column(Float)
-    trade_type = Column(String)  # 'buy' or 'sell'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    token_address = Column(String, nullable=False)
+    token_symbol = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)
+    trade_type = Column(String, nullable=False)  # 'buy' or 'sell'
     timestamp = Column(DateTime, default=datetime.utcnow)
     
     user = relationship("User", back_populates="trades")
 
 def init_db(database_url):
     engine = create_engine(database_url)
+    # Drop all tables first to ensure clean state
+    Base.metadata.drop_all(engine)
+    # Create all tables
     Base.metadata.create_all(engine)
     return engine 
