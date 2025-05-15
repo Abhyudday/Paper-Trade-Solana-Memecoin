@@ -163,36 +163,17 @@ async def handle_token_selected_for_sell(query, context):
 async def handle_buy_token(update, context, ca, usd_amount):
     """Handle token purchase"""
     try:
-        logger.info(f"=== Starting handle_buy_token ===")
-        logger.info(f"Parameters - ca: {ca}, usd_amount: {usd_amount}")
-        
         session = Session()
         user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
         
-        # Get token price
-        logger.info("Fetching token price...")
         price = await get_token_price(ca)
         if not price:
-            logger.error(f"Failed to fetch price for token {ca}")
             await update.message.reply_text("❌ Token price fetch failed.")
             return
 
-        logger.info(f"Token price fetched: ${price}")
-
-        # Calculate quantity
         qty = usd_amount / price
-        logger.info(f"Calculated quantity: {qty}")
-
-        if usd_amount > user.balance:
-            logger.warning(f"Insufficient balance. User has ${user.balance}, tried to spend ${usd_amount}")
-            await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
-            return
-
-        # Update user balance
         user.balance -= usd_amount
-        logger.info(f"Updated balance: ${user.balance}")
 
-        # Update holdings
         holdings = user.holdings or {}
         holding = holdings.get(ca)
         if holding:
@@ -200,38 +181,22 @@ async def handle_buy_token(update, context, ca, usd_amount):
             new_qty = holding['qty'] + qty
             holding['avg_price'] = total_cost / new_qty
             holding['qty'] = new_qty
-            logger.info(f"Updated existing holding. New quantity: {new_qty}, New avg price: {holding['avg_price']}")
         else:
             holdings[ca] = {'qty': qty, 'avg_price': price}
-            logger.info(f"Created new holding. Quantity: {qty}, Price: {price}")
-        
+
         user.holdings = holdings
         user.history = user.history or []
         user.history.append(f"🟢 Bought {qty:.4f} of {ca} at ${price:.4f}")
-        
-        logger.info("Committing changes to database...")
         session.commit()
-        logger.info("Database changes committed successfully")
 
-        # Send confirmation message
-        confirmation_msg = (
-            f"✅ Trade executed successfully!\n\n"
-            f"• Amount: ${usd_amount:.2f}\n"
-            f"• Quantity: {qty:.4f}\n"
-            f"• Price: ${price:.4f}\n"
-            f"• Remaining Balance: ${user.balance:.2f}"
+        await update.message.reply_text(
+            f"✅ Bought {qty:.4f} of {ca} at ${price:.4f}\n"
+            f"💵 Remaining Balance: ${user.balance:.2f}"
         )
-        logger.info("Sending confirmation message...")
-        await update.message.reply_text(confirmation_msg)
-        logger.info("Confirmation message sent")
-        
-        logger.info(f"Buy token process completed successfully for user {update.effective_user.id}")
     except Exception as e:
-        logger.error(f"Error in buy token: {str(e)}")
+        logger.error(f"Error in buy token: {e}")
         await update.message.reply_text("❌ An error occurred during the trade. Please try again.")
         session.rollback()
-    finally:
-        logger.info("=== Ending handle_buy_token ===")
 
 async def handle_sell_token(update, context, token, percent):
     """Handle token sale"""
@@ -269,10 +234,15 @@ async def handle_sell_token(update, context, token, percent):
         user.history.append(f"🔴 Sold {qty_to_sell:.4f} of {token} at ${price:.4f} | PnL: ${pnl:.2f}")
         session.commit()
 
-        await update.message.reply_text(f"✅ Sold {qty_to_sell:.4f} of {token} at ${price:.4f}\n💵 PnL: ${pnl:.2f}")
+        await update.message.reply_text(
+            f"✅ Sold {qty_to_sell:.4f} of {token} at ${price:.4f}\n"
+            f"💵 PnL: ${pnl:.2f}\n"
+            f"💰 New Balance: ${user.balance:.2f}"
+        )
     except Exception as e:
         logger.error(f"Error in sell token: {e}")
         await update.message.reply_text("❌ An error occurred during the trade. Please try again.")
+        session.rollback()
 
 async def show_balance(query, context):
     """Show user's balance"""
@@ -426,71 +396,39 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages"""
     try:
-        logger.info("=== Starting handle_message ===")
         session = Session()
         user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
         if not user:
-            logger.info("User not found, starting new user flow")
             await start(update, context)
             return
 
         text = update.message.text.strip()
         ctx = user.context or {}
         
-        logger.info(f"Received message: {text} from user {update.effective_user.id}")
-        logger.info(f"Current context: {ctx}")
-        
         if 'mode' in ctx:
-            logger.info(f"Processing message in mode: {ctx['mode']}")
             if ctx['mode'] == 'buy':
                 if is_solana_address(text):
-                    logger.info(f"Valid token address received: {text}")
                     ctx['ca'] = text
                     user.context = ctx
                     session.commit()
                     await update.message.reply_text("💵 How much USD to invest?")
                 elif 'ca' in ctx:
-                    logger.info(f"Processing USD amount for token: {ctx['ca']}")
                     try:
                         usd = float(text)
-                        logger.info(f"Parsed USD amount: {usd}")
-                        
-                        if usd <= 0:
-                            logger.warning(f"Invalid amount: {usd} (must be positive)")
-                            await update.message.reply_text("❌ Please enter a positive amount.")
-                            return
-                            
-                        if usd > user.balance:
-                            logger.warning(f"Insufficient balance. User has ${user.balance}, tried to spend ${usd}")
-                            await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
-                            return
-                            
-                        logger.info(f"Calling handle_buy_token with ca={ctx['ca']}, usd={usd}")
                         await handle_buy_token(update, context, ctx['ca'], usd)
-                        logger.info("Buy token process completed, clearing context")
                         user.context = {}
                         session.commit()
-                    except ValueError as ve:
-                        logger.error(f"Invalid USD amount: {text}, error: {str(ve)}")
-                        await update.message.reply_text("❌ Please enter a valid number.")
-                    except Exception as e:
-                        logger.error(f"Error processing buy amount: {str(e)}")
-                        await update.message.reply_text("❌ An error occurred. Please try again.")
+                    except:
+                        await update.message.reply_text("❌ Enter a valid USD amount.")
                 return
             elif ctx['mode'] == 'sell' and 'token' in ctx:
                 try:
                     percent = float(text)
-                    if percent <= 0 or percent > 100:
-                        await update.message.reply_text("❌ Please enter a percentage between 0 and 100.")
-                        return
                     await handle_sell_token(update, context, ctx['token'], percent)
                     user.context = {}
                     session.commit()
-                except ValueError:
-                    await update.message.reply_text("❌ Please enter a valid percentage.")
-                except Exception as e:
-                    logger.error(f"Error processing sell percentage: {e}")
-                    await update.message.reply_text("❌ An error occurred. Please try again.")
+                except:
+                    await update.message.reply_text("❌ Enter a valid percentage.")
                 return
 
         if is_solana_address(text):
@@ -502,10 +440,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await start(update, context)
     except Exception as e:
-        logger.error(f"Error in handle message: {str(e)}")
+        logger.error(f"Error in handle message: {e}")
         await update.message.reply_text("❌ An error occurred. Please try again.")
-    finally:
-        logger.info("=== Ending handle_message ===")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button callbacks"""
