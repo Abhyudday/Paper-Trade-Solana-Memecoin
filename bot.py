@@ -436,12 +436,13 @@ async def setup_helius_webhook(wallet_address):
         "transactionTypes": ["SWAP", "TRANSFER"],
         "accountAddresses": [wallet_address],
         "webhookType": "enhanced",
-        "api-key": HELIUS_API_KEY  # Changed from authHeader to api-key
+        "api-key": HELIUS_API_KEY
     }
     
     try:
         logger.info(f"Setting up webhook for wallet {wallet_address}")
         logger.info(f"Webhook URL: {WEBHOOK_URL}/webhook")
+        logger.info(f"Request data: {json.dumps(data, indent=2)}")
         
         response = await asyncio.to_thread(requests.post, url, headers=headers, json=data)
         logger.info(f"Helius API Response Status: {response.status_code}")
@@ -735,8 +736,10 @@ async def test_webhook_config():
             "api-key": HELIUS_API_KEY
         }
         
+        logger.info(f"Testing Helius API with data: {json.dumps(data, indent=2)}")
         response = await asyncio.to_thread(requests.get, url, headers=headers, json=data)
         logger.info(f"Helius API test response: {response.status_code}")
+        logger.info(f"Helius API test response body: {response.text}")
         
         if response.status_code == 200:
             logger.info("✅ Webhook configuration is valid")
