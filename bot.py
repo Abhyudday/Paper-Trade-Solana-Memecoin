@@ -1,6 +1,7 @@
 import os
 import logging
 import re
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -23,9 +24,31 @@ INITIAL_BALANCE = 10000.0
 REFERRAL_BONUS = 500.0
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
+USER_DATA_FILE = 'user_data.json'
 
 # In-memory storage
 USERS = {}
+
+def load_user_data():
+    """Load user data from file"""
+    try:
+        if os.path.exists(USER_DATA_FILE):
+            with open(USER_DATA_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading user data: {e}")
+    return {}
+
+def save_user_data():
+    """Save user data to file"""
+    try:
+        with open(USER_DATA_FILE, 'w') as f:
+            json.dump(USERS, f)
+    except Exception as e:
+        logger.error(f"Error saving user data: {e}")
+
+# Load existing user data
+USERS = load_user_data()
 
 def is_solana_address(text):
     return bool(re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", text.strip()))
@@ -45,7 +68,7 @@ async def get_token_price(token_address):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /start command"""
-    uid = update.effective_user.id
+    uid = str(update.effective_user.id)  # Convert to string for JSON storage
     if uid not in USERS:
         USERS[uid] = {
             'balance': INITIAL_BALANCE,
@@ -54,6 +77,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'history': [],
             'context': {}
         }
+        save_user_data()  # Save when new user is added
 
     keyboard = [
         [InlineKeyboardButton("🟢 Buy", callback_data="menu_buy"),
@@ -94,7 +118,7 @@ async def handle_token_selected_for_sell(query, context):
 
 async def handle_buy_token(update, context, ca, usd_amount):
     """Handle token purchase"""
-    uid = update.effective_user.id
+    uid = str(update.effective_user.id)
     user = USERS[uid]
     price = await get_token_price(ca)
     if not price:
@@ -118,11 +142,12 @@ async def handle_buy_token(update, context, ca, usd_amount):
         user['holdings'][ca] = {'qty': qty, 'avg_price': price}
 
     user['history'].append(f"🟢 Bought {qty:.4f} of {ca} at ${price:.4f}")
+    save_user_data()  # Save after trade
     await update.message.reply_text(f"✅ Bought {qty:.4f} of {ca} at ${price:.4f}")
 
 async def handle_sell_token(update, context, token, percent):
     """Handle token sale"""
-    uid = update.effective_user.id
+    uid = str(update.effective_user.id)
     user = USERS[uid]
     holding = user['holdings'].get(token)
     if not holding:
@@ -149,24 +174,33 @@ async def handle_sell_token(update, context, token, percent):
         del user['holdings'][token]
 
     user['history'].append(f"🔴 Sold {qty_to_sell:.4f} of {token} at ${price:.4f} | PnL: ${pnl:.2f}")
+    save_user_data()  # Save after trade
     await update.message.reply_text(f"✅ Sold {qty_to_sell:.4f} of {token} at ${price:.4f}\n💵 PnL: ${pnl:.2f}")
 
 async def show_balance(query, context):
     """Show user's balance"""
-    uid = query.from_user.id
+    uid = str(query.from_user.id)
     user = USERS[uid]
-    balance = user['balance']
+    
+    # Calculate total holdings value
+    total_holdings = 0
+    for token, holding in user['holdings'].items():
+        price = await get_token_price(token)
+        if price:
+            total_holdings += holding['qty'] * price
 
     msg = (
-        f"💵 Cash: ${balance:.2f}\n"
-        f"📦 Holdings Value: Click to Check token PnL"
+        f"💵 Cash: ${user['balance']:.2f}\n"
+        f"📦 Holdings Value: ${total_holdings:.2f}\n"
+        f"💰 Total Value: ${(user['balance'] + total_holdings):.2f}\n"
+        f"📈 Realized PnL: ${user['realized_pnl']:.2f}"
     )
     keyboard = [[InlineKeyboardButton("📈 View Token PnL", callback_data="menu_pnl")]]
     await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_pnl_tokens(query, context):
     """Show list of tokens for PnL check"""
-    uid = query.from_user.id
+    uid = str(query.from_user.id)
     user = USERS.get(uid)
     tokens = list(user['holdings'].keys())
     if not tokens:
@@ -177,7 +211,7 @@ async def show_pnl_tokens(query, context):
 
 async def show_token_pnl(query, context):
     """Show PnL for specific token"""
-    uid = query.from_user.id
+    uid = str(query.from_user.id)
     token = query.data.split(":")[1]
     user = USERS.get(uid)
     holding = user['holdings'][token]
@@ -216,7 +250,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = 0
     for user_id in USERS:
         try:
-            await context.bot.send_message(chat_id=user_id, text=message)
+            await context.bot.send_message(chat_id=int(user_id), text=message)
             sent += 1
         except Exception as e:
             logger.error(f"Failed to send broadcast to user {user_id}: {e}")
@@ -225,7 +259,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages"""
-    uid = update.effective_user.id
+    uid = str(update.effective_user.id)
     text = update.message.text.strip()
     user = USERS.get(uid)
     if not user:
@@ -284,11 +318,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_token_pnl(query, context)
     elif data.startswith("ca_buy:"):
         ca = data.split(":")[1]
-        USERS[query.from_user.id]['context'] = {'mode': 'buy', 'ca': ca}
+        USERS[str(query.from_user.id)]['context'] = {'mode': 'buy', 'ca': ca}
         await query.message.reply_text("💵 How much USD to invest?")
     elif data.startswith("ca_sell:"):
         token = data.split(":")[1]
-        USERS[query.from_user.id]['context'] = {'mode': 'sell', 'token': token}
+        USERS[str(query.from_user.id)]['context'] = {'mode': 'sell', 'token': token}
         await query.message.reply_text("💸 Enter the % of token to sell:")
     elif data == "menu_copy_trade":
         await handle_coming_soon(query, context, "Copy Trade")
