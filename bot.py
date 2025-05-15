@@ -163,18 +163,23 @@ async def handle_token_selected_for_sell(query, context):
 async def handle_buy_token(update, context, ca, usd_amount):
     """Handle token purchase"""
     try:
+        logger.info(f"Starting buy token process for {ca} with {usd_amount} USD")
         session = Session()
         user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
         
         # Get token price
         price = await get_token_price(ca)
         if not price:
+            logger.error(f"Failed to fetch price for token {ca}")
             await update.message.reply_text("❌ Token price fetch failed.")
             return
+
+        logger.info(f"Token price fetched: ${price}")
 
         # Calculate quantity
         qty = usd_amount / price
         if usd_amount > user.balance:
+            logger.warning(f"Insufficient balance. User has ${user.balance}, tried to spend ${usd_amount}")
             await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
             return
 
@@ -189,8 +194,10 @@ async def handle_buy_token(update, context, ca, usd_amount):
             new_qty = holding['qty'] + qty
             holding['avg_price'] = total_cost / new_qty
             holding['qty'] = new_qty
+            logger.info(f"Updated existing holding. New quantity: {new_qty}, New avg price: {holding['avg_price']}")
         else:
             holdings[ca] = {'qty': qty, 'avg_price': price}
+            logger.info(f"Created new holding. Quantity: {qty}, Price: {price}")
         
         user.holdings = holdings
         user.history = user.history or []
@@ -205,6 +212,7 @@ async def handle_buy_token(update, context, ca, usd_amount):
             f"• Price: ${price:.4f}\n"
             f"• Remaining Balance: ${user.balance:.2f}"
         )
+        logger.info(f"Buy token process completed successfully for user {update.effective_user.id}")
     except Exception as e:
         logger.error(f"Error in buy token: {e}")
         await update.message.reply_text("❌ An error occurred during the trade. Please try again.")
@@ -412,9 +420,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
         ctx = user.context or {}
         
+        logger.info(f"Received message: {text} from user {update.effective_user.id}")
+        logger.info(f"Current context: {ctx}")
+        
         if 'mode' in ctx:
             if ctx['mode'] == 'buy':
                 if is_solana_address(text):
+                    logger.info(f"Valid token address received: {text}")
                     ctx['ca'] = text
                     user.context = ctx
                     session.commit()
@@ -422,6 +434,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif 'ca' in ctx:
                     try:
                         usd = float(text)
+                        logger.info(f"Processing buy amount: {usd} for token: {ctx['ca']}")
                         if usd <= 0:
                             await update.message.reply_text("❌ Please enter a positive amount.")
                             return
@@ -429,6 +442,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         user.context = {}
                         session.commit()
                     except ValueError:
+                        logger.error(f"Invalid USD amount: {text}")
                         await update.message.reply_text("❌ Please enter a valid number.")
                     except Exception as e:
                         logger.error(f"Error processing buy amount: {e}")
