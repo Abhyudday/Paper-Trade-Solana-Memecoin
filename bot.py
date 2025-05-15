@@ -188,41 +188,55 @@ async def handle_token_selected_for_sell(query, context):
         logger.error(f"Error in token selection: {e}")
         await query.message.reply_text("❌ An error occurred. Please try again.")
 
-async def handle_buy_token(update, context, ca, usd_amount):
+async def handle_buy_token(update, context, token_address, usd_amount):
     """Handle token purchase"""
+    session = None
     try:
         session = Session()
         user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
         
-        # Get token price
-        price = await get_token_price(ca)
-        if not price:
-            await update.message.reply_text("❌ Token price fetch failed.")
+        if not user:
+            await update.message.reply_text("❌ User not found. Please start the bot with /start")
             return
 
-        # Calculate quantity
-        qty = usd_amount / price
+        # Get token price
+        price = await get_token_price(token_address)
+        if not price:
+            await update.message.reply_text("❌ Failed to fetch token price. Please try again.")
+            return
+
+        # Validate amount
+        if usd_amount <= 0:
+            await update.message.reply_text("❌ Please enter a positive amount.")
+            return
+
+        # Check balance
         if usd_amount > user.balance:
             await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
             return
 
+        # Calculate quantity
+        qty = usd_amount / price
+        
         # Update user balance
         user.balance -= usd_amount
 
         # Update holdings
         holdings = user.holdings or {}
-        holding = holdings.get(ca)
+        holding = holdings.get(token_address)
         if holding:
             total_cost = holding['qty'] * holding['avg_price'] + usd_amount
             new_qty = holding['qty'] + qty
             holding['avg_price'] = total_cost / new_qty
             holding['qty'] = new_qty
         else:
-            holdings[ca] = {'qty': qty, 'avg_price': price}
+            holdings[token_address] = {'qty': qty, 'avg_price': price}
         
         user.holdings = holdings
         user.history = user.history or []
-        user.history.append(f"🟢 Bought {qty:.4f} of {ca} at ${price:.4f}")
+        user.history.append(f"🟢 Bought {qty:.4f} of {token_address} at ${price:.4f}")
+        
+        # Commit changes
         session.commit()
 
         # Send confirmation message
@@ -233,10 +247,15 @@ async def handle_buy_token(update, context, ca, usd_amount):
             f"• Price: ${price:.4f}\n"
             f"• Remaining Balance: ${user.balance:.2f}"
         )
+        
+        return True
+
     except Exception as e:
         logger.error(f"Error in buy token: {e}")
+        if session:
+            session.rollback()
         await update.message.reply_text("❌ An error occurred during the trade. Please try again.")
-        session.rollback()
+        return False
 
 async def handle_sell_token(update, context, token, percent):
     """Handle token sale"""
@@ -582,56 +601,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif 'ca' in ctx:
                     try:
                         usd = float(text)
-                        if usd <= 0:
-                            await update.message.reply_text("❌ Please enter a positive amount.")
-                            return
-                        # Get token price
-                        price = await get_token_price(ctx['ca'])
-                        if not price:
-                            await update.message.reply_text("❌ Token price fetch failed.")
-                            return
-
-                        # Calculate quantity
-                        qty = usd / price
-                        if usd > user.balance:
-                            await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
-                            return
-
-                        # Update user balance
-                        user.balance -= usd
-
-                        # Update holdings
-                        holdings = user.holdings or {}
-                        holding = holdings.get(ctx['ca'])
-                        if holding:
-                            total_cost = holding['qty'] * holding['avg_price'] + usd
-                            new_qty = holding['qty'] + qty
-                            holding['avg_price'] = total_cost / new_qty
-                            holding['qty'] = new_qty
-                        else:
-                            holdings[ctx['ca']] = {'qty': qty, 'avg_price': price}
-                        
-                        user.holdings = holdings
-                        user.history = user.history or []
-                        user.history.append(f"🟢 Bought {qty:.4f} of {ctx['ca']} at ${price:.4f}")
-                        session.commit()
-
-                        # Send confirmation message
-                        await update.message.reply_text(
-                            f"✅ Trade executed successfully!\n\n"
-                            f"• Amount: ${usd:.2f}\n"
-                            f"• Quantity: {qty:.4f}\n"
-                            f"• Price: ${price:.4f}\n"
-                            f"• Remaining Balance: ${user.balance:.2f}"
-                        )
-                        user.context = {}
-                        session.commit()
+                        success = await handle_buy_token(update, context, ctx['ca'], usd)
+                        if success:
+                            user.context = {}
+                            session.commit()
                     except ValueError:
                         await update.message.reply_text("❌ Please enter a valid number.")
                     except Exception as e:
                         logger.error(f"Error processing buy amount: {e}")
                         await update.message.reply_text("❌ An error occurred. Please try again.")
-                        session.rollback()
                 return
             elif ctx['mode'] == 'sell' and 'token' in ctx:
                 try:
