@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 import requests
 import asyncio
 import json
+from aiohttp import web
 
 from models import User, init_db
 
@@ -34,6 +35,7 @@ REFERRAL_BONUS = 500.0
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
 HELIUS_API_KEY = os.getenv('HELIUS_API_KEY')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # Your webhook URL for Helius
 
 # Global application instance
 application = None
@@ -423,6 +425,61 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session.rollback()
         await update.message.reply_text(f"❌ An error occurred during broadcast: {str(e)}")
 
+async def setup_helius_webhook(wallet_address):
+    """Setup webhook for wallet tracking"""
+    url = "https://api.helius.xyz/v0/webhooks"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    data = {
+        "webhookURL": f"{WEBHOOK_URL}/webhook",
+        "transactionTypes": ["SWAP", "TRANSFER"],
+        "accountAddresses": [wallet_address],
+        "webhookType": "enhanced",
+        "authHeader": HELIUS_API_KEY
+    }
+    
+    try:
+        response = await asyncio.to_thread(requests.post, url, headers=headers, json=data)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Helius webhook setup error: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        logger.error(f"Error setting up Helius webhook: {e}")
+        return None
+
+async def format_trade_alert(transaction):
+    """Format trade alert message"""
+    try:
+        timestamp = datetime.fromtimestamp(transaction.get('timestamp', 0))
+        tx_type = transaction.get('type', 'Unknown')
+        
+        # Get token transfers
+        token_transfers = []
+        if 'tokenTransfers' in transaction:
+            for transfer in transaction['tokenTransfers']:
+                token_name = transfer.get('tokenName', 'Unknown Token')
+                amount = transfer.get('tokenAmount', 0)
+                token_transfers.append(f"{amount} {token_name}")
+        
+        # Format the alert
+        alert = [
+            f"🔔 New Trade Alert!",
+            f"🕒 {timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"📝 Type: {tx_type}"
+        ]
+        
+        if token_transfers:
+            alert.append("💸 Transfers:")
+            alert.extend([f"  • {transfer}" for transfer in token_transfers])
+        
+        return "\n".join(alert)
+    except Exception as e:
+        logger.error(f"Error formatting trade alert: {e}")
+        return "Error formatting trade alert"
+
 async def handle_track_wallet(query, context):
     """Handle wallet tracking request"""
     try:
@@ -434,7 +491,7 @@ async def handle_track_wallet(query, context):
         session.commit()
         
         await query.message.reply_text(
-            "🔍 Enter the Solana wallet address to track:"
+            "🔍 Enter the Solana wallet address to track for real-time trade alerts:"
         )
     except Exception as e:
         logger.error(f"Error in track wallet: {e}")
@@ -443,52 +500,92 @@ async def handle_track_wallet(query, context):
 async def handle_wallet_address(update, context, wallet_address):
     """Handle wallet address input for tracking"""
     try:
-        # Get wallet activity
-        activity = await get_wallet_activity(wallet_address)
-        if not activity:
-            await update.message.reply_text("❌ Could not fetch wallet activity. Please try again.")
+        # Setup webhook for the wallet
+        webhook = await setup_helius_webhook(wallet_address)
+        if not webhook:
+            await update.message.reply_text("❌ Failed to setup wallet tracking. Please try again.")
             return
         
-        # Format and display activity
-        formatted_activity = await format_wallet_activity(activity)
+        # Store the webhook ID in user's context
+        session = Session()
+        user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
         
-        # Create keyboard with refresh option
+        # Initialize tracked_wallets if it doesn't exist
+        if 'tracked_wallets' not in user.context:
+            user.context['tracked_wallets'] = []
+        
+        # Add new wallet to tracked list
+        user.context['tracked_wallets'].append({
+            'address': wallet_address,
+            'webhook_id': webhook['webhookID']
+        })
+        session.commit()
+        
+        # Create keyboard with options
         keyboard = [
-            [InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_wallet:{wallet_address}")],
+            [InlineKeyboardButton("🔕 Stop Tracking", callback_data=f"stop_tracking:{wallet_address}")],
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
         ]
         
         await update.message.reply_text(
-            f"📊 Wallet Activity for {wallet_address}:\n\n{formatted_activity}",
+            f"✅ Now tracking real-time trades for wallet:\n{wallet_address}\n\n"
+            f"You will receive instant alerts whenever this wallet executes a trade.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
         logger.error(f"Error handling wallet address: {e}")
-        await update.message.reply_text("❌ An error occurred while fetching wallet activity.")
+        await update.message.reply_text("❌ An error occurred while setting up wallet tracking.")
 
-async def handle_refresh_wallet(query, context):
-    """Handle wallet activity refresh"""
+async def handle_stop_tracking(query, context):
+    """Handle stop tracking request"""
     try:
         wallet_address = query.data.split(":")[1]
-        activity = await get_wallet_activity(wallet_address)
-        if not activity:
-            await query.message.reply_text("❌ Could not fetch wallet activity. Please try again.")
-            return
+        session = Session()
+        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
         
-        formatted_activity = await format_wallet_activity(activity)
+        # Remove wallet from tracked list
+        tracked_wallets = user.context.get('tracked_wallets', [])
+        for wallet in tracked_wallets:
+            if wallet['address'] == wallet_address:
+                # Delete webhook
+                url = f"https://api.helius.xyz/v0/webhooks/{wallet['webhook_id']}?api-key={HELIUS_API_KEY}"
+                await asyncio.to_thread(requests.delete, url)
+                tracked_wallets.remove(wallet)
+                break
         
-        keyboard = [
-            [InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_wallet:{wallet_address}")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
-        ]
+        user.context['tracked_wallets'] = tracked_wallets
+        session.commit()
         
         await query.message.edit_text(
-            f"📊 Wallet Activity for {wallet_address}:\n\n{formatted_activity}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            f"✅ Stopped tracking wallet:\n{wallet_address}"
         )
     except Exception as e:
-        logger.error(f"Error refreshing wallet: {e}")
-        await query.message.reply_text("❌ An error occurred while refreshing wallet activity.")
+        logger.error(f"Error stopping wallet tracking: {e}")
+        await query.message.reply_text("❌ An error occurred while stopping wallet tracking.")
+
+async def webhook_handler(request):
+    """Handle incoming webhook notifications"""
+    try:
+        data = await request.json()
+        session = Session()
+        
+        # Find all users tracking this wallet
+        users = session.query(User).all()
+        for user in users:
+            tracked_wallets = user.context.get('tracked_wallets', [])
+            for wallet in tracked_wallets:
+                if wallet['address'] in [data.get('source'), data.get('destination')]:
+                    # Format and send alert
+                    alert = await format_trade_alert(data)
+                    await application.bot.send_message(
+                        chat_id=user.telegram_id,
+                        text=alert
+                    )
+        
+        return web.Response(text="OK")
+    except Exception as e:
+        logger.error(f"Error in webhook handler: {e}")
+        return web.Response(text="Error", status=500)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages"""
@@ -603,8 +700,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("track_wallet:"):
             wallet_address = data.split(":")[1]
             await handle_wallet_address(query, context, wallet_address)
-        elif data.startswith("refresh_wallet:"):
-            await handle_refresh_wallet(query, context)
+        elif data.startswith("stop_tracking:"):
+            await handle_stop_tracking(query, context)
         elif data == "menu_back":
             await start(update, context)
     except Exception as e:
@@ -628,9 +725,16 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
+    # Start webhook server for Helius notifications
+    app = web.Application()
+    app.router.add_post('/webhook', webhook_handler)
+    
     # Start the bot
     logger.info("Bot starting...")
     application.run_polling(drop_pending_updates=True)
+    
+    # Start webhook server
+    web.run_app(app, host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
 
 if __name__ == '__main__':
     main() 
