@@ -438,6 +438,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if usd <= 0:
                             await update.message.reply_text("❌ Please enter a positive amount.")
                             return
+                        if usd > user.balance:
+                            await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
+                            return
                         await handle_buy_token(update, context, ctx['ca'], usd)
                         user.context = {}
                         session.commit()
