@@ -10,6 +10,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from sqlalchemy.orm import sessionmaker
 import requests
 import asyncio
+import json
 
 from models import User, init_db
 
@@ -32,6 +33,7 @@ INITIAL_BALANCE = 10000.0
 REFERRAL_BONUS = 500.0
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
+HELIUS_API_KEY = os.getenv('HELIUS_API_KEY')
 
 # Global application instance
 application = None
@@ -61,6 +63,54 @@ async def get_token_price(token_address):
     except Exception as e:
         logger.error(f"Error fetching token price: {e}")
     return None
+
+async def get_wallet_activity(wallet_address):
+    """Get wallet activity using Helius API"""
+    url = f"https://api.helius.xyz/v0/addresses/{wallet_address}/transactions?api-key={HELIUS_API_KEY}"
+    try:
+        response = await asyncio.to_thread(requests.get, url)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Helius API error: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching wallet activity: {e}")
+        return None
+
+async def format_wallet_activity(transactions):
+    """Format wallet activity for display"""
+    if not transactions:
+        return "No recent activity found."
+    
+    formatted_activity = []
+    for tx in transactions[:5]:  # Show last 5 transactions
+        timestamp = datetime.fromtimestamp(tx.get('timestamp', 0))
+        tx_type = tx.get('type', 'Unknown')
+        description = tx.get('description', 'No description')
+        
+        # Get token transfers if available
+        token_transfers = []
+        if 'tokenTransfers' in tx:
+            for transfer in tx['tokenTransfers']:
+                token_name = transfer.get('tokenName', 'Unknown Token')
+                amount = transfer.get('tokenAmount', 0)
+                token_transfers.append(f"{amount} {token_name}")
+        
+        # Format the transaction
+        tx_info = [
+            f"🕒 {timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"📝 {tx_type}",
+            f"📄 {description}"
+        ]
+        
+        if token_transfers:
+            tx_info.append("💸 Transfers:")
+            tx_info.extend([f"  • {transfer}" for transfer in token_transfers])
+        
+        formatted_activity.append("\n".join(tx_info))
+    
+    return "\n\n".join(formatted_activity)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /start command"""
@@ -373,6 +423,73 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session.rollback()
         await update.message.reply_text(f"❌ An error occurred during broadcast: {str(e)}")
 
+async def handle_track_wallet(query, context):
+    """Handle wallet tracking request"""
+    try:
+        session = Session()
+        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
+        
+        # Set context for wallet address input
+        user.context = {'mode': 'track_wallet'}
+        session.commit()
+        
+        await query.message.reply_text(
+            "🔍 Enter the Solana wallet address to track:"
+        )
+    except Exception as e:
+        logger.error(f"Error in track wallet: {e}")
+        await query.message.reply_text("❌ An error occurred. Please try again.")
+
+async def handle_wallet_address(update, context, wallet_address):
+    """Handle wallet address input for tracking"""
+    try:
+        # Get wallet activity
+        activity = await get_wallet_activity(wallet_address)
+        if not activity:
+            await update.message.reply_text("❌ Could not fetch wallet activity. Please try again.")
+            return
+        
+        # Format and display activity
+        formatted_activity = await format_wallet_activity(activity)
+        
+        # Create keyboard with refresh option
+        keyboard = [
+            [InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_wallet:{wallet_address}")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
+        ]
+        
+        await update.message.reply_text(
+            f"📊 Wallet Activity for {wallet_address}:\n\n{formatted_activity}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        logger.error(f"Error handling wallet address: {e}")
+        await update.message.reply_text("❌ An error occurred while fetching wallet activity.")
+
+async def handle_refresh_wallet(query, context):
+    """Handle wallet activity refresh"""
+    try:
+        wallet_address = query.data.split(":")[1]
+        activity = await get_wallet_activity(wallet_address)
+        if not activity:
+            await query.message.reply_text("❌ Could not fetch wallet activity. Please try again.")
+            return
+        
+        formatted_activity = await format_wallet_activity(activity)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_wallet:{wallet_address}")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
+        ]
+        
+        await query.message.edit_text(
+            f"📊 Wallet Activity for {wallet_address}:\n\n{formatted_activity}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        logger.error(f"Error refreshing wallet: {e}")
+        await query.message.reply_text("❌ An error occurred while refreshing wallet activity.")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages"""
     try:
@@ -422,13 +539,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"Error processing sell percentage: {e}")
                     await update.message.reply_text("❌ An error occurred. Please try again.")
                 return
+            elif ctx['mode'] == 'track_wallet':
+                if is_solana_address(text):
+                    await handle_wallet_address(update, context, text)
+                    user.context = {}
+                    session.commit()
+                else:
+                    await update.message.reply_text("❌ Please enter a valid Solana wallet address.")
+                return
 
         if is_solana_address(text):
             keyboard = [
                 [InlineKeyboardButton("🟢 Buy", callback_data=f"ca_buy:{text}"),
-                 InlineKeyboardButton("🔴 Sell", callback_data=f"ca_sell:{text}")]
+                 InlineKeyboardButton("🔴 Sell", callback_data=f"ca_sell:{text}")],
+                [InlineKeyboardButton("👤 Track Wallet", callback_data=f"track_wallet:{text}")]
             ]
-            await update.message.reply_text("Detected token address. Choose action:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await update.message.reply_text("Detected wallet/token address. Choose action:", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             await start(update, context)
     except Exception as e:
@@ -473,7 +599,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "menu_check_wallet_pnl":
             await handle_coming_soon(query, context, "Check Wallet PnL")
         elif data == "menu_track_wallet":
-            await handle_coming_soon(query, context, "Track Wallet")
+            await handle_track_wallet(query, context)
+        elif data.startswith("track_wallet:"):
+            wallet_address = data.split(":")[1]
+            await handle_wallet_address(query, context, wallet_address)
+        elif data.startswith("refresh_wallet:"):
+            await handle_refresh_wallet(query, context)
+        elif data == "menu_back":
+            await start(update, context)
     except Exception as e:
         logger.error(f"Error in button handler: {e}")
         await update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
