@@ -10,7 +10,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from sqlalchemy.orm import sessionmaker
 import requests
 import asyncio
-import json
 
 from models import User, init_db
 
@@ -33,7 +32,10 @@ INITIAL_BALANCE = 10000.0
 REFERRAL_BONUS = 500.0
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
-HELIUS_API_KEY = os.getenv('HELIUS_API_KEY')
+
+# Promotional links
+TROJAN_BOT_LINK = "https://t.me/solana_trojanbot?start=r-abhyudday"
+GMGN_BOT_LINK = "https://t.me/GMGN_sol_bot?start=i_NEu2DbZx"
 
 # Global application instance
 application = None
@@ -64,53 +66,23 @@ async def get_token_price(token_address):
         logger.error(f"Error fetching token price: {e}")
     return None
 
-async def get_wallet_activity(wallet_address):
-    """Get wallet activity using Helius API"""
-    url = f"https://api.helius.xyz/v0/addresses/{wallet_address}/transactions?api-key={HELIUS_API_KEY}"
-    try:
-        response = await asyncio.to_thread(requests.get, url)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"Helius API error: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        logger.error(f"Error fetching wallet activity: {e}")
-        return None
-
-async def format_wallet_activity(transactions):
-    """Format wallet activity for display"""
-    if not transactions:
-        return "No recent trading activity found."
-    
-    formatted_activity = []
-    for tx in transactions[:5]:  # Show last 5 transactions
-        timestamp = datetime.fromtimestamp(tx.get('timestamp', 0))
-        tx_type = tx.get('type', 'Unknown')
-        description = tx.get('description', 'No description')
-        
-        # Get token transfers if available
-        token_transfers = []
-        if 'tokenTransfers' in tx:
-            for transfer in tx['tokenTransfers']:
-                token_name = transfer.get('tokenName', 'Unknown Token')
-                amount = transfer.get('tokenAmount', 0)
-                token_transfers.append(f"{amount} {token_name}")
-        
-        # Format the transaction
-        tx_info = [
-            f"🕒 {timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"📝 {tx_type}",
-            f"📄 {description}"
-        ]
-        
-        if token_transfers:
-            tx_info.append("💸 Token Transfers:")
-            tx_info.extend([f"  • {transfer}" for transfer in token_transfers])
-        
-        formatted_activity.append("\n".join(tx_info))
-    
-    return "\n\n".join(formatted_activity)
+async def show_promotions(message):
+    """Show promotional messages for other bots"""
+    promo_text = (
+        "🚀 Want to trade real tokens? Check out these amazing bots:\n\n"
+        "🤖 Trojan on Solana\n"
+        "• Advanced trading features\n"
+        "• Real-time price alerts\n"
+        "• Fee rebates available\n"
+        f"• Start here: {TROJAN_BOT_LINK}\n\n"
+        "🤖 GMGN Sniper Bot\n"
+        "• Fast token sniping\n"
+        "• Multiple backup bots\n"
+        "• Fee rebates available\n"
+        f"• Start here: {GMGN_BOT_LINK}\n\n"
+        "💡 Use these bots to trade real tokens and get fee rebates!"
+    )
+    await message.reply_text(promo_text)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /start command"""
@@ -138,7 +110,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("📈 PnL", callback_data="menu_pnl")],
             [InlineKeyboardButton("🔁 Copy Trade", callback_data="menu_copy_trade"),
              InlineKeyboardButton("🔎 Check Wallet PnL", callback_data="menu_check_wallet_pnl")],
-            [InlineKeyboardButton("📊 Recent Trades", callback_data="menu_recent_trades")]
+            [InlineKeyboardButton("👤 Track Wallet", callback_data="menu_track_wallet")],
+            [InlineKeyboardButton("🚀 Real Trading Bots", callback_data="menu_promotions")]
         ]
         await update.message.reply_text(
             "👋 Welcome to the Memecoin Paper Trading Bot!\nChoose an action:",
@@ -188,55 +161,41 @@ async def handle_token_selected_for_sell(query, context):
         logger.error(f"Error in token selection: {e}")
         await query.message.reply_text("❌ An error occurred. Please try again.")
 
-async def handle_buy_token(update, context, token_address, usd_amount):
+async def handle_buy_token(update, context, ca, usd_amount):
     """Handle token purchase"""
-    session = None
     try:
         session = Session()
         user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
         
-        if not user:
-            await update.message.reply_text("❌ User not found. Please start the bot with /start")
-            return
-
         # Get token price
-        price = await get_token_price(token_address)
+        price = await get_token_price(ca)
         if not price:
-            await update.message.reply_text("❌ Failed to fetch token price. Please try again.")
-            return
-
-        # Validate amount
-        if usd_amount <= 0:
-            await update.message.reply_text("❌ Please enter a positive amount.")
-            return
-
-        # Check balance
-        if usd_amount > user.balance:
-            await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
+            await update.message.reply_text("❌ Token price fetch failed.")
             return
 
         # Calculate quantity
         qty = usd_amount / price
-        
+        if usd_amount > user.balance:
+            await update.message.reply_text(f"❌ Insufficient balance. You have ${user.balance:.2f}")
+            return
+
         # Update user balance
         user.balance -= usd_amount
 
         # Update holdings
         holdings = user.holdings or {}
-        holding = holdings.get(token_address)
+        holding = holdings.get(ca)
         if holding:
             total_cost = holding['qty'] * holding['avg_price'] + usd_amount
             new_qty = holding['qty'] + qty
             holding['avg_price'] = total_cost / new_qty
             holding['qty'] = new_qty
         else:
-            holdings[token_address] = {'qty': qty, 'avg_price': price}
+            holdings[ca] = {'qty': qty, 'avg_price': price}
         
         user.holdings = holdings
         user.history = user.history or []
-        user.history.append(f"🟢 Bought {qty:.4f} of {token_address} at ${price:.4f}")
-        
-        # Commit changes
+        user.history.append(f"🟢 Bought {qty:.4f} of {ca} at ${price:.4f}")
         session.commit()
 
         # Send confirmation message
@@ -247,15 +206,10 @@ async def handle_buy_token(update, context, token_address, usd_amount):
             f"• Price: ${price:.4f}\n"
             f"• Remaining Balance: ${user.balance:.2f}"
         )
-        
-        return True
-
     except Exception as e:
         logger.error(f"Error in buy token: {e}")
-        if session:
-            session.rollback()
         await update.message.reply_text("❌ An error occurred during the trade. Please try again.")
-        return False
+        session.rollback()
 
 async def handle_sell_token(update, context, token, percent):
     """Handle token sale"""
@@ -372,7 +326,12 @@ async def show_token_pnl(query, context):
 
 async def handle_coming_soon(query, context, feature):
     """Handle features under construction"""
-    await query.message.reply_text(f"🚧 {feature} feature is under construction.")
+    await query.message.reply_text(
+        f"🚧 {feature} feature is under construction.\n\n"
+        "💡 In the meantime, check out our real trading bots:\n\n"
+        f"🤖 Trojan on Solana: {TROJAN_BOT_LINK}\n"
+        f"🤖 GMGN Sniper Bot: {GMGN_BOT_LINK}"
+    )
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Broadcast message to all users (admin only)"""
@@ -442,143 +401,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session.rollback()
         await update.message.reply_text(f"❌ An error occurred during broadcast: {str(e)}")
 
-async def handle_recent_transactions(query, context):
-    """Handle recent transactions request"""
-    try:
-        keyboard = [
-            [InlineKeyboardButton("👤 My Recent Trades", callback_data="view_my_trades")],
-            [InlineKeyboardButton("🔍 Check Any Wallet", callback_data="check_wallet_trades")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
-        ]
-        await query.message.reply_text(
-            "📊 Choose an option to view recent trades:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except Exception as e:
-        logger.error(f"Error in recent transactions menu: {e}")
-        await query.message.reply_text("❌ An error occurred. Please try again.")
-
-async def handle_my_trades(query, context):
-    """Handle viewing user's own trades"""
-    try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-        
-        if not user or not user.history:
-            await query.message.reply_text("📭 No trading history found.")
-            return
-        
-        # Format the last 5 trades
-        trades = user.history[-5:]  # Get last 5 trades
-        formatted_trades = "\n\n".join(trades)
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Refresh", callback_data="refresh_my_trades")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
-        ]
-        
-        await query.message.reply_text(
-            f"📊 Your Recent Trades:\n\n{formatted_trades}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except Exception as e:
-        logger.error(f"Error showing my trades: {e}")
-        await query.message.reply_text("❌ An error occurred while fetching your trades.")
-
-async def handle_check_wallet_trades(query, context):
-    """Handle request to check any wallet's trades"""
-    try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-        
-        # Set context for wallet address input
-        user.context = {'mode': 'recent_transactions'}
-        session.commit()
-        
-        await query.message.reply_text(
-            "🔍 Enter the Solana wallet address to view recent trades:"
-        )
-    except Exception as e:
-        logger.error(f"Error in check wallet trades: {e}")
-        await query.message.reply_text("❌ An error occurred. Please try again.")
-
-async def handle_refresh_my_trades(query, context):
-    """Handle refresh of user's own trades"""
-    try:
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-        
-        if not user or not user.history:
-            await query.message.reply_text("📭 No trading history found.")
-            return
-        
-        # Format the last 5 trades
-        trades = user.history[-5:]  # Get last 5 trades
-        formatted_trades = "\n\n".join(trades)
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Refresh", callback_data="refresh_my_trades")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
-        ]
-        
-        await query.message.edit_text(
-            f"📊 Your Recent Trades:\n\n{formatted_trades}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except Exception as e:
-        logger.error(f"Error refreshing my trades: {e}")
-        await query.message.reply_text("❌ An error occurred while refreshing your trades.")
-
-async def handle_wallet_address(update, context, wallet_address):
-    """Handle wallet address input for viewing recent transactions"""
-    try:
-        # Get wallet activity
-        activity = await get_wallet_activity(wallet_address)
-        if not activity:
-            await update.message.reply_text("❌ Could not fetch recent trades. Please try again.")
-            return
-        
-        # Format and display activity
-        formatted_activity = await format_wallet_activity(activity)
-        
-        # Create keyboard with refresh option
-        keyboard = [
-            [InlineKeyboardButton("🔄 Refresh Trades", callback_data=f"refresh_trades:{wallet_address}")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
-        ]
-        
-        await update.message.reply_text(
-            f"📊 Recent Trades for {wallet_address}:\n\n{formatted_activity}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except Exception as e:
-        logger.error(f"Error handling wallet address: {e}")
-        await update.message.reply_text("❌ An error occurred while fetching recent trades.")
-
-async def handle_refresh_trades(query, context):
-    """Handle recent trades refresh"""
-    try:
-        wallet_address = query.data.split(":")[1]
-        activity = await get_wallet_activity(wallet_address)
-        if not activity:
-            await query.message.reply_text("❌ Could not fetch recent trades. Please try again.")
-            return
-        
-        formatted_activity = await format_wallet_activity(activity)
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Refresh Trades", callback_data=f"refresh_trades:{wallet_address}")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back")]
-        ]
-        
-        await query.message.edit_text(
-            f"📊 Recent Trades for {wallet_address}:\n\n{formatted_activity}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except Exception as e:
-        logger.error(f"Error refreshing trades: {e}")
-        await query.message.reply_text("❌ An error occurred while refreshing recent trades.")
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages"""
     try:
@@ -601,10 +423,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif 'ca' in ctx:
                     try:
                         usd = float(text)
-                        success = await handle_buy_token(update, context, ctx['ca'], usd)
-                        if success:
-                            user.context = {}
-                            session.commit()
+                        if usd <= 0:
+                            await update.message.reply_text("❌ Please enter a positive amount.")
+                            return
+                        await handle_buy_token(update, context, ctx['ca'], usd)
+                        user.context = {}
+                        session.commit()
                     except ValueError:
                         await update.message.reply_text("❌ Please enter a valid number.")
                     except Exception as e:
@@ -626,22 +450,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"Error processing sell percentage: {e}")
                     await update.message.reply_text("❌ An error occurred. Please try again.")
                 return
-            elif ctx['mode'] == 'recent_transactions':
-                if is_solana_address(text):
-                    await handle_wallet_address(update, context, text)
-                    user.context = {}
-                    session.commit()
-                else:
-                    await update.message.reply_text("❌ Please enter a valid Solana wallet address.")
-                return
 
         if is_solana_address(text):
             keyboard = [
                 [InlineKeyboardButton("🟢 Buy", callback_data=f"ca_buy:{text}"),
-                 InlineKeyboardButton("🔴 Sell", callback_data=f"ca_sell:{text}")],
-                [InlineKeyboardButton("📊 View Recent Trades", callback_data=f"recent_trades:{text}")]
+                 InlineKeyboardButton("🔴 Sell", callback_data=f"ca_sell:{text}")]
             ]
-            await update.message.reply_text("Detected wallet/token address. Choose action:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await update.message.reply_text("Detected token address. Choose action:", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             await start(update, context)
     except Exception as e:
@@ -685,21 +500,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_coming_soon(query, context, "Copy Trade")
         elif data == "menu_check_wallet_pnl":
             await handle_coming_soon(query, context, "Check Wallet PnL")
-        elif data == "menu_recent_trades":
-            await handle_recent_transactions(query, context)
-        elif data == "view_my_trades":
-            await handle_my_trades(query, context)
-        elif data == "check_wallet_trades":
-            await handle_check_wallet_trades(query, context)
-        elif data == "refresh_my_trades":
-            await handle_refresh_my_trades(query, context)
-        elif data.startswith("recent_trades:"):
-            wallet_address = data.split(":")[1]
-            await handle_wallet_address(query, context, wallet_address)
-        elif data.startswith("refresh_trades:"):
-            await handle_refresh_trades(query, context)
-        elif data == "menu_back":
-            await start(update, context)
+        elif data == "menu_track_wallet":
+            await handle_coming_soon(query, context, "Track Wallet")
+        elif data == "menu_promotions":
+            await show_promotions(query.message)
     except Exception as e:
         logger.error(f"Error in button handler: {e}")
         await update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
