@@ -720,6 +720,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in button handler: {e}")
         await update.callback_query.message.reply_text("❌ An error occurred. Please try again.")
 
+async def test_webhook_config():
+    """Test webhook configuration on startup"""
+    try:
+        logger.info("Testing webhook configuration...")
+        logger.info(f"WEBHOOK_URL: {WEBHOOK_URL}")
+        logger.info(f"HELIUS_API_KEY: {HELIUS_API_KEY[:8]}...")  # Only log first 8 chars for security
+        
+        # Test Helius API connection
+        url = "https://api.helius.xyz/v0/webhooks"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {HELIUS_API_KEY}"
+        }
+        
+        response = await asyncio.to_thread(requests.get, url, headers=headers)
+        logger.info(f"Helius API test response: {response.status_code}")
+        
+        if response.status_code == 200:
+            logger.info("✅ Webhook configuration is valid")
+        else:
+            logger.error(f"❌ Helius API test failed: {response.text}")
+    except Exception as e:
+        logger.error(f"❌ Webhook configuration test failed: {str(e)}")
+
 def main():
     """Start the bot"""
     global application
@@ -740,6 +764,9 @@ def main():
     # Start webhook server for Helius notifications
     app = web.Application()
     app.router.add_post('/webhook', webhook_handler)
+    
+    # Test webhook configuration
+    asyncio.run(test_webhook_config())
     
     # Start the bot
     logger.info("Bot starting...")
