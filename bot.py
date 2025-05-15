@@ -306,7 +306,7 @@ async def handle_coming_soon(query, context, feature):
     await query.message.reply_text(f"🚧 {feature} feature is under construction.")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Broadcast message to all users (admin only)"""
+    """Send a new broadcast message to all users (admin only)"""
     try:
         if update.effective_user.id != ADMIN_ID:
             await update.message.reply_text("🚫 You are not authorized to use this command.")
@@ -323,39 +323,58 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent = 0
         for user in users:
             try:
-                if user.last_broadcast_message_id:
-                    # Try to edit existing message
-                    try:
-                        await context.bot.edit_message_text(
-                            chat_id=user.telegram_id,
-                            message_id=user.last_broadcast_message_id,
-                            text=message
-                        )
-                        sent += 1
-                    except Exception as e:
-                        # If edit fails (e.g., message too old), send new message
-                        new_message = await context.bot.send_message(
-                            chat_id=user.telegram_id,
-                            text=message
-                        )
-                        user.last_broadcast_message_id = new_message.message_id
-                        sent += 1
-                else:
-                    # Send new message if no previous broadcast exists
-                    new_message = await context.bot.send_message(
-                        chat_id=user.telegram_id,
-                        text=message
-                    )
-                    user.last_broadcast_message_id = new_message.message_id
-                    sent += 1
+                # Send new message
+                new_message = await context.bot.send_message(
+                    chat_id=user.telegram_id,
+                    text=message
+                )
+                # Store the new message ID
+                user.last_broadcast_message_id = new_message.message_id
+                sent += 1
             except Exception as e:
                 logger.error(f"Failed to send broadcast to user {user.telegram_id}: {e}")
         
         session.commit()
-        await update.message.reply_text(f"✅ Message updated for {sent} users.")
+        await update.message.reply_text(f"✅ Message sent to {sent} users.")
     except Exception as e:
         logger.error(f"Error in broadcast: {e}")
         await update.message.reply_text("❌ An error occurred during broadcast.")
+        session.rollback()
+
+async def edit_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Edit the last broadcast message (admin only)"""
+    try:
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("🚫 You are not authorized to use this command.")
+            return
+        
+        if not context.args:
+            await update.message.reply_text("📝 Usage: /editbroadcast Your new message here")
+            return
+        
+        message = ' '.join(context.args)
+        session = Session()
+        users = session.query(User).all()
+        
+        updated = 0
+        for user in users:
+            try:
+                if user.last_broadcast_message_id:
+                    # Try to edit existing message
+                    await context.bot.edit_message_text(
+                        chat_id=user.telegram_id,
+                        message_id=user.last_broadcast_message_id,
+                        text=message
+                    )
+                    updated += 1
+            except Exception as e:
+                logger.error(f"Failed to edit broadcast for user {user.telegram_id}: {e}")
+        
+        session.commit()
+        await update.message.reply_text(f"✅ Message updated for {updated} users.")
+    except Exception as e:
+        logger.error(f"Error in edit broadcast: {e}")
+        await update.message.reply_text("❌ An error occurred while editing broadcast.")
         session.rollback()
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -477,6 +496,7 @@ def main():
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CommandHandler("editbroadcast", edit_broadcast))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
