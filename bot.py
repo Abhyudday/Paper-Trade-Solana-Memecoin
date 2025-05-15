@@ -429,7 +429,8 @@ async def setup_helius_webhook(wallet_address):
     """Setup webhook for wallet tracking"""
     url = "https://api.helius.xyz/v0/webhooks"
     headers = {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {HELIUS_API_KEY}"
     }
     data = {
         "webhookURL": f"{WEBHOOK_URL}/webhook",
@@ -440,14 +441,20 @@ async def setup_helius_webhook(wallet_address):
     }
     
     try:
+        logger.info(f"Setting up webhook for wallet {wallet_address}")
+        logger.info(f"Webhook URL: {WEBHOOK_URL}/webhook")
+        
         response = await asyncio.to_thread(requests.post, url, headers=headers, json=data)
+        logger.info(f"Helius API Response Status: {response.status_code}")
+        logger.info(f"Helius API Response: {response.text}")
+        
         if response.status_code == 200:
             return response.json()
         else:
             logger.error(f"Helius webhook setup error: {response.status_code} - {response.text}")
             return None
     except Exception as e:
-        logger.error(f"Error setting up Helius webhook: {e}")
+        logger.error(f"Error setting up Helius webhook: {str(e)}")
         return None
 
 async def format_trade_alert(transaction):
@@ -503,7 +510,12 @@ async def handle_wallet_address(update, context, wallet_address):
         # Setup webhook for the wallet
         webhook = await setup_helius_webhook(wallet_address)
         if not webhook:
-            await update.message.reply_text("❌ Failed to setup wallet tracking. Please try again.")
+            await update.message.reply_text(
+                "❌ Failed to setup wallet tracking. Please ensure:\n"
+                "1. Your Helius API key is valid\n"
+                "2. Your webhook URL is publicly accessible\n"
+                "3. The wallet address is valid"
+            )
             return
         
         # Store the webhook ID in user's context
@@ -533,7 +545,7 @@ async def handle_wallet_address(update, context, wallet_address):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
-        logger.error(f"Error handling wallet address: {e}")
+        logger.error(f"Error handling wallet address: {str(e)}")
         await update.message.reply_text("❌ An error occurred while setting up wallet tracking.")
 
 async def handle_stop_tracking(query, context):
