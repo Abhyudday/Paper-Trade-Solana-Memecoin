@@ -110,7 +110,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("📈 PnL", callback_data="menu_pnl")],
             [InlineKeyboardButton("🔁 Copy Trade", callback_data="menu_copy_trade"),
              InlineKeyboardButton("🔎 Check Wallet PnL", callback_data="menu_check_wallet_pnl")],
-            [InlineKeyboardButton("👤 Track Wallet", callback_data="menu_track_wallet")],
             [InlineKeyboardButton("🚀 Real Trading Bots", callback_data="menu_promotions")]
         ]
         await update.message.reply_text(
@@ -500,8 +499,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_coming_soon(query, context, "Copy Trade")
         elif data == "menu_check_wallet_pnl":
             await handle_coming_soon(query, context, "Check Wallet PnL")
-        elif data == "menu_track_wallet":
-            await handle_coming_soon(query, context, "Track Wallet")
         elif data == "menu_promotions":
             await show_promotions(query.message)
     except Exception as e:
