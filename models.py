@@ -3,7 +3,9 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
 import os
+import logging
 
+logger = logging.getLogger(__name__)
 Base = declarative_base()
 
 class User(Base):
@@ -39,6 +41,31 @@ class Trade(Base):
 
 def init_db(database_url):
     engine = create_engine(database_url)
+    
     # Create tables if they don't exist
     Base.metadata.create_all(engine)
+    
+    # Add new columns if they don't exist
+    with engine.connect() as conn:
+        try:
+            # Check if last_broadcast_message_id column exists
+            result = conn.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='users' 
+                AND column_name='last_broadcast_message_id'
+            """).fetchone()
+            
+            if not result:
+                logger.info("Adding last_broadcast_message_id column to users table")
+                conn.execute("""
+                    ALTER TABLE users 
+                    ADD COLUMN last_broadcast_message_id INTEGER
+                """)
+                conn.commit()
+                logger.info("Successfully added last_broadcast_message_id column")
+        except Exception as e:
+            logger.error(f"Error during database migration: {e}")
+            raise
+    
     return engine 
