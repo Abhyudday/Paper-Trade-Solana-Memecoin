@@ -765,8 +765,13 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Create application
-    application = Application.builder().token(os.getenv('BOT_TOKEN')).build()
+    # Create application with proper configuration
+    application = (
+        Application.builder()
+        .token(os.getenv('BOT_TOKEN'))
+        .concurrent_updates(True)  # Enable concurrent updates
+        .build()
+    )
     
     # Add handlers
     application.add_handler(CommandHandler("start", start))
@@ -774,9 +779,24 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Start the bot
+    # Start the bot with proper error handling
     logger.info("Bot starting...")
-    application.run_polling(drop_pending_updates=True)
+    try:
+        # Drop pending updates and start polling
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False
+        )
+    except Exception as e:
+        logger.error(f"Error starting bot: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
-    main() 
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Bot stopped due to error: {e}")
+        sys.exit(1) 
