@@ -38,8 +38,6 @@ class Trade(Base):
 
 def init_db(database_url):
     engine = create_engine(database_url)
-    # Drop all tables first to ensure clean state
-    Base.metadata.drop_all(engine)
-    # Create all tables
+    # Create tables if they don't exist
     Base.metadata.create_all(engine)
     return engine 
