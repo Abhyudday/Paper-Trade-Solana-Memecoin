@@ -67,7 +67,26 @@ def init_db(database_url):
                 conn.commit()
                 logger.info("Successfully added last_broadcast_message_id column")
 
-            # Rename referred_by to referral_id if it exists
+            # Check if referral_id column exists
+            check_referral_id = text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='users' 
+                AND column_name='referral_id'
+            """)
+            result = conn.execute(check_referral_id).fetchone()
+            
+            if not result:
+                logger.info("Adding referral_id column to users table")
+                add_referral_id_query = text("""
+                    ALTER TABLE users 
+                    ADD COLUMN referral_id BIGINT
+                """)
+                conn.execute(add_referral_id_query)
+                conn.commit()
+                logger.info("Successfully added referral_id column")
+
+            # Check if referred_by column exists and rename it if it does
             check_referred_by = text("""
                 SELECT column_name 
                 FROM information_schema.columns 
