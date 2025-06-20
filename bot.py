@@ -10,6 +10,10 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from sqlalchemy.orm import sessionmaker
 import requests
 import asyncio
+import aiohttp
+from aiohttp import web
+import threading
+import time
 
 from models import User, init_db
 
@@ -33,12 +37,71 @@ REFERRAL_BONUS = 500.0
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 BIRDEYE_API_KEY = os.getenv('BIRDEYE_API_KEY')
 
+# Uptime monitoring settings
+UPTIME_MONITORING_ENABLED = os.getenv('UPTIME_MONITORING_ENABLED', 'true').lower() == 'true'
+UPTIME_PING_INTERVAL = int(os.getenv('UPTIME_PING_INTERVAL', '300'))  # 5 minutes default
+UPTIME_URLS = os.getenv('UPTIME_URLS', '').split(',') if os.getenv('UPTIME_URLS') else []
+
 # Promotional links
 TROJAN_BOT_LINK = "https://t.me/solana_trojanbot?start=r-abhyudday"
 GMGN_BOT_LINK = "https://t.me/GMGN_sol_bot?start=i_NEu2DbZx"
 
 # In-memory user data
 USERS = {}
+
+# Global variables for uptime monitoring
+uptime_server = None
+uptime_task = None
+
+async def uptime_ping_handler(request):
+    """Handle uptime ping requests"""
+    return web.Response(text="Bot is alive! 🚀", status=200)
+
+async def start_uptime_server():
+    """Start the uptime monitoring HTTP server"""
+    global uptime_server
+    app = web.Application()
+    app.router.add_get('/', uptime_ping_handler)
+    app.router.add_get('/ping', uptime_ping_handler)
+    app.router.add_get('/health', uptime_ping_handler)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.getenv('PORT', 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    
+    logger.info(f"Uptime server started on port {port}")
+    return runner
+
+async def ping_uptime_services():
+    """Ping external uptime monitoring services"""
+    if not UPTIME_MONITORING_ENABLED or not UPTIME_URLS:
+        return
+    
+    async with aiohttp.ClientSession() as session:
+        for url in UPTIME_URLS:
+            url = url.strip()
+            if url:
+                try:
+                    async with session.get(url, timeout=10) as response:
+                        if response.status == 200:
+                            logger.info(f"Successfully pinged uptime service: {url}")
+                        else:
+                            logger.warning(f"Uptime service returned status {response.status}: {url}")
+                except Exception as e:
+                    logger.error(f"Failed to ping uptime service {url}: {e}")
+
+async def uptime_ping_loop():
+    """Background task to periodically ping uptime services"""
+    while True:
+        try:
+            await ping_uptime_services()
+        except Exception as e:
+            logger.error(f"Error in uptime ping loop: {e}")
+        
+        await asyncio.sleep(UPTIME_PING_INTERVAL)
 
 def is_solana_address(text):
     return bool(re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", text.strip()))
@@ -559,9 +622,26 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Start the bot
-    logger.info("Bot starting...")
-    application.run_polling(drop_pending_updates=True)
+    # Start uptime server and ping task
+    async def start_services():
+        global uptime_server, uptime_task
+        
+        # Start uptime HTTP server
+        uptime_server = await start_uptime_server()
+        
+        # Start background ping task
+        if UPTIME_MONITORING_ENABLED:
+            uptime_task = asyncio.create_task(uptime_ping_loop())
+            logger.info("Uptime monitoring started")
+        
+        # Start the bot
+        await application.initialize()
+        await application.start()
+        await application.run_polling(drop_pending_updates=True)
+    
+    # Run the services
+    logger.info("Starting bot with uptime monitoring...")
+    asyncio.run(start_services())
 
 if __name__ == '__main__':
     main() 

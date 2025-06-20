@@ -12,6 +12,68 @@ A Telegram bot that allows users to paper trade Solana memecoins with a virtual 
 - 📱 User-friendly button interface
 - 📢 Admin broadcast messages
 
+## Uptime Monitoring
+
+The bot includes built-in uptime monitoring to keep it alive on Railway and prevent it from going to sleep.
+
+### Built-in HTTP Server
+
+The bot now runs a simple HTTP server that responds to health check requests:
+
+- **Root endpoint**: `https://your-bot.railway.app/`
+- **Health endpoint**: `https://your-bot.railway.app/health`
+- **Ping endpoint**: `https://your-bot.railway.app/ping`
+
+All endpoints return "Bot is alive! 🚀" with a 200 status code.
+
+### Environment Variables for Uptime Monitoring
+
+Add these to your Railway environment variables:
+
+```bash
+# Enable/disable uptime monitoring (default: true)
+UPTIME_MONITORING_ENABLED=true
+
+# Ping interval in seconds (default: 300 = 5 minutes)
+UPTIME_PING_INTERVAL=300
+
+# Comma-separated list of uptime monitoring service URLs
+# Example: https://uptimerobot.com/ping/your-monitor-id
+UPTIME_URLS=https://your-uptime-service.com/ping/your-id
+```
+
+### External Uptime Monitoring Services
+
+You can use external services to ping your bot:
+
+1. **UptimeRobot** (Free):
+   - Create a new monitor
+   - Set URL to: `https://your-bot.railway.app/health`
+   - Set check interval to 5 minutes
+
+2. **Cron-job.org** (Free):
+   - Create a new cron job
+   - Set URL to: `https://your-bot.railway.app/ping`
+   - Set schedule to every 5 minutes
+
+3. **Custom Script**:
+   - Use the provided `uptime_monitor.py` script
+   - Set `BOT_URL` environment variable to your bot's URL
+   - Run it on a separate server or VPS
+
+### Using the Uptime Monitor Script
+
+```bash
+# Install dependencies
+pip install requests
+
+# Set your bot URL
+export BOT_URL=https://your-bot.railway.app
+
+# Run the monitor
+python uptime_monitor.py
+```
+
 ## Setup
 
 1. Clone the repository
@@ -31,6 +93,9 @@ A Telegram bot that allows users to paper trade Solana memecoins with a virtual 
    ADMIN_ID=your_telegram_id
    HELIUS_API_KEY=your_helius_api_key
    DATABASE_URL=your_postgresql_database_url
+   UPTIME_MONITORING_ENABLED=true
+   UPTIME_PING_INTERVAL=300
+   UPTIME_URLS=https://your-uptime-service.com/ping/your-id
    ```
 
 ## Deployment on Railway
