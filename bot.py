@@ -486,7 +486,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if not context.args:
-            await update.message.reply_text("📝 Usage: /broadcast Your message here\n\n💡 Use <name> to include user's name in the message")
+            await update.message.reply_text("📝 Usage: /broadcast Your message here\n\n💡 Use 'bros' to include user's name in the message")
             return
         
         message = ' '.join(context.args)
@@ -500,8 +500,8 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent = 0
         failed = 0
         
-        # Check if message contains <name> placeholder
-        has_name_placeholder = '<name>' in message
+        # Check if message contains 'bros' placeholder
+        has_name_placeholder = 'bros' in message
         
         for user in users:
             try:
@@ -521,13 +521,13 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         elif chat_member.user.username:
                             user_name = f"@{chat_member.user.username}"
                         
-                        # Replace <name> with user's name or empty string if no name
-                        user_message = message.replace('<name>', user_name or '')
+                        # Replace 'bros' with user's name or empty string if no name
+                        user_message = message.replace('bros', user_name or '')
                         
                     except Exception as e:
                         logger.warning(f"Could not get user info for {user.telegram_id}: {e}")
-                        # If we can't get user info, just remove the <name> placeholder
-                        user_message = message.replace('<name>', '')
+                        # If we can't get user info, just remove the 'bros' placeholder
+                        user_message = message.replace('bros', '')
                 
                 if user.last_broadcast_message_id:
                     try:
