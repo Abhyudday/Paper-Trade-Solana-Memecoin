@@ -28,8 +28,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize database
-engine = init_db(os.getenv('DATABASE_URL'))
-Session = sessionmaker(bind=engine)
+try:
+    engine = init_db(os.getenv('DATABASE_URL'))
+    Session = sessionmaker(bind=engine)
+    logger.info("Database initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize database: {e}")
+    raise
 
 # Constants
 INITIAL_BALANCE = 1000.0
@@ -68,11 +73,12 @@ async def start_uptime_server():
     runner = web.AppRunner(app)
     await runner.setup()
     
-    port = int(os.getenv('PORT', 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
+    # Use a different port for uptime server to avoid conflicts
+    uptime_port = int(os.getenv('UPTIME_PORT', 8081))  # Default to 8081 instead of 8080
+    site = web.TCPSite(runner, '0.0.0.0', uptime_port)
     await site.start()
     
-    logger.info(f"Uptime server started on port {port}")
+    logger.info(f"Uptime server started on port {uptime_port}")
     return runner
 
 async def ping_uptime_services():
@@ -622,26 +628,53 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Start uptime server and ping task
+    # Global variables for cleanup
+    global uptime_server, uptime_task
+    
     async def start_services():
+        """Start all services"""
         global uptime_server, uptime_task
         
-        # Start uptime HTTP server
-        uptime_server = await start_uptime_server()
-        
-        # Start background ping task
-        if UPTIME_MONITORING_ENABLED:
-            uptime_task = asyncio.create_task(uptime_ping_loop())
-            logger.info("Uptime monitoring started")
-        
-        # Start the bot
-        await application.initialize()
-        await application.start()
-        await application.run_polling(drop_pending_updates=True)
+        try:
+            # Start uptime HTTP server
+            logger.info("Starting uptime HTTP server...")
+            uptime_server = await start_uptime_server()
+            
+            # Start background ping task
+            if UPTIME_MONITORING_ENABLED:
+                logger.info("Starting uptime monitoring...")
+                uptime_task = asyncio.create_task(uptime_ping_loop())
+                logger.info("Uptime monitoring started")
+            
+            # Start the bot
+            logger.info("Initializing bot application...")
+            await application.initialize()
+            logger.info("Starting bot application...")
+            await application.start()
+            logger.info("Starting bot polling...")
+            await application.run_polling(drop_pending_updates=True)
+            
+        except Exception as e:
+            logger.error(f"Error in start_services: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
     
     # Run the services
     logger.info("Starting bot with uptime monitoring...")
-    asyncio.run(start_services())
+    
+    try:
+        asyncio.run(start_services())
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt, shutting down...")
+    except asyncio.CancelledError:
+        logger.info("Application was cancelled")
+    except Exception as e:
+        logger.error(f"Error in main: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+    finally:
+        logger.info("Bot shutdown complete")
 
 if __name__ == '__main__':
     main() 
