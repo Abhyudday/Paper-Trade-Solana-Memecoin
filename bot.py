@@ -489,7 +489,11 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📝 Usage: /broadcast Your message here\n\n💡 Use 'bros' to include user's name in the message")
             return
         
-        message = ' '.join(context.args)
+        # Get the full message text to preserve formatting
+        message = update.message.text
+        # Remove the "/broadcast " part to get just the message content
+        message = message.replace('/broadcast ', '', 1)
+        
         session = Session()
         users = session.query(User).all()
         
