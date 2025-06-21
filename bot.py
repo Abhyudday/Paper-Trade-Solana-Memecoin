@@ -28,13 +28,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize database
-try:
-    engine = init_db(os.getenv('DATABASE_URL'))
-    Session = sessionmaker(bind=engine)
-    logger.info("Database initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize database: {e}")
-    raise
+import time
+max_retries = 5
+retry_delay = 10  # seconds
+
+for attempt in range(max_retries):
+    try:
+        logger.info(f"Attempting to connect to database (attempt {attempt + 1}/{max_retries})...")
+        engine = init_db(os.getenv('DATABASE_URL'))
+        Session = sessionmaker(bind=engine)
+        logger.info("Database initialized successfully")
+        break
+    except Exception as e:
+        logger.error(f"Failed to initialize database (attempt {attempt + 1}/{max_retries}): {e}")
+        if attempt < max_retries - 1:
+            logger.info(f"Retrying in {retry_delay} seconds...")
+            time.sleep(retry_delay)
+        else:
+            logger.error("Max retries reached. Please check your DATABASE_URL and ensure the database is running.")
+            raise
 
 # Constants
 INITIAL_BALANCE = 1000.0
