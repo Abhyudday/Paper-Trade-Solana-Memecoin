@@ -486,7 +486,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if not context.args:
-            await update.message.reply_text("📝 Usage: /broadcast Your message here")
+            await update.message.reply_text("📝 Usage: /broadcast Your message here\n\n💡 Use <name> to include user's name in the message")
             return
         
         message = ' '.join(context.args)
@@ -499,37 +499,66 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         sent = 0
         failed = 0
+        
+        # Check if message contains <name> placeholder
+        has_name_placeholder = '<name>' in message
+        
         for user in users:
             try:
+                # Get user's Telegram info for name replacement
+                user_message = message
+                if has_name_placeholder:
+                    try:
+                        # Get user's Telegram info
+                        chat_member = await context.bot.get_chat_member(user.telegram_id, user.telegram_id)
+                        user_name = None
+                        
+                        # Try to get the best available name
+                        if chat_member.user.first_name:
+                            user_name = chat_member.user.first_name
+                            if chat_member.user.last_name:
+                                user_name += f" {chat_member.user.last_name}"
+                        elif chat_member.user.username:
+                            user_name = f"@{chat_member.user.username}"
+                        
+                        # Replace <name> with user's name or empty string if no name
+                        user_message = message.replace('<name>', user_name or '')
+                        
+                    except Exception as e:
+                        logger.warning(f"Could not get user info for {user.telegram_id}: {e}")
+                        # If we can't get user info, just remove the <name> placeholder
+                        user_message = message.replace('<name>', '')
+                
                 if user.last_broadcast_message_id:
                     try:
                         await context.bot.edit_message_text(
                             chat_id=user.telegram_id,
                             message_id=user.last_broadcast_message_id,
-                            text=message
+                            text=user_message
                         )
                         sent += 1
                     except Exception as e:
                         new_message = await context.bot.send_message(
                             chat_id=user.telegram_id,
-                            text=message
+                            text=user_message
                         )
                         user.last_broadcast_message_id = new_message.message_id
                         sent += 1
                 else:
                     new_message = await context.bot.send_message(
                         chat_id=user.telegram_id,
-                        text=message
+                        text=user_message
                     )
                     user.last_broadcast_message_id = new_message.message_id
                     sent += 1
             except Exception as e:
                 failed += 1
+                logger.error(f"Failed to send broadcast to user {user.telegram_id}: {e}")
         
         session.commit()
-        status_message = f"✅ Message updated for {sent} users."
+        status_message = f"✅ Message sent to {sent} users."
         if failed > 0:
-            status_message += f"\n❌ Failed to update {failed} users."
+            status_message += f"\n❌ Failed to send to {failed} users."
         await update.message.reply_text(status_message)
     except Exception as e:
         logger.error(f"Error in broadcast: {e}")
