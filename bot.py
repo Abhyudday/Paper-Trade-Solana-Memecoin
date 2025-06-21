@@ -658,11 +658,7 @@ def main():
                 uptime_task = asyncio.create_task(uptime_ping_loop())
                 logger.info("Uptime monitoring started")
             
-            # Start the bot
-            logger.info("Initializing bot application...")
-            await application.initialize()
-            logger.info("Starting bot application...")
-            await application.start()
+            # Start the bot - run_polling handles initialization and starting
             logger.info("Starting bot polling...")
             await application.run_polling(drop_pending_updates=True)
             
