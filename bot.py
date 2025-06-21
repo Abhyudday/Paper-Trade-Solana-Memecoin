@@ -643,40 +643,59 @@ def main():
     # Global variables for cleanup
     global uptime_server, uptime_task
     
-    async def start_services():
-        """Start all services"""
-        global uptime_server, uptime_task
+    def run_uptime_server():
+        """Run uptime server in a separate thread"""
+        import asyncio
+        import threading
         
-        try:
-            # Start uptime HTTP server
-            logger.info("Starting uptime HTTP server...")
-            uptime_server = await start_uptime_server()
+        def start_server():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             
-            # Start background ping task
-            if UPTIME_MONITORING_ENABLED:
-                logger.info("Starting uptime monitoring...")
-                uptime_task = asyncio.create_task(uptime_ping_loop())
-                logger.info("Uptime monitoring started")
+            async def server():
+                global uptime_server, uptime_task
+                
+                # Start uptime HTTP server
+                logger.info("Starting uptime HTTP server...")
+                uptime_server = await start_uptime_server()
+                
+                # Start background ping task
+                if UPTIME_MONITORING_ENABLED:
+                    logger.info("Starting uptime monitoring...")
+                    uptime_task = asyncio.create_task(uptime_ping_loop())
+                    logger.info("Uptime monitoring started")
+                
+                # Keep the server running
+                while True:
+                    await asyncio.sleep(1)
             
-            # Start the bot - run_polling handles initialization and starting
-            logger.info("Starting bot polling...")
-            await application.run_polling(drop_pending_updates=True)
-            
-        except Exception as e:
-            logger.error(f"Error in start_services: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
+            try:
+                loop.run_until_complete(server())
+            except Exception as e:
+                logger.error(f"Uptime server error: {e}")
+            finally:
+                loop.close()
+        
+        # Start server in thread
+        server_thread = threading.Thread(target=start_server, daemon=True)
+        server_thread.start()
+        return server_thread
     
     # Run the services
     logger.info("Starting bot with uptime monitoring...")
     
     try:
-        asyncio.run(start_services())
+        # Start uptime server in background thread
+        if UPTIME_MONITORING_ENABLED:
+            uptime_thread = run_uptime_server()
+            logger.info("Uptime services started in background")
+        
+        # Start the bot with standard polling
+        logger.info("Starting bot polling...")
+        application.run_polling(drop_pending_updates=True)
+        
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, shutting down...")
-    except asyncio.CancelledError:
-        logger.info("Application was cancelled")
     except Exception as e:
         logger.error(f"Error in main: {e}")
         import traceback
