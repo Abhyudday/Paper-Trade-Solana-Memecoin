@@ -453,14 +453,20 @@ async def show_referral_info(query, context):
     """Show referral information and link"""
     try:
         uid = query.from_user.id
-        user = USERS[uid]
+        
+        # Get user from database if not in memory
+        session = Session()
+        db_user = session.query(User).filter_by(telegram_id=uid).first()
+        
+        if not db_user:
+            await query.message.reply_text("❌ User not found. Please use /start to register.")
+            return
         
         # Generate referral link
         bot_username = (await context.bot.get_me()).username
         referral_link = f"https://t.me/{bot_username}?start=ref_{uid}"
         
         # Count referrals
-        session = Session()
         referral_count = session.query(User).filter_by(referral_id=uid).count()
         
         msg = (
@@ -476,6 +482,8 @@ async def show_referral_info(query, context):
         await query.message.reply_text(msg, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"Error in show referral info: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         await query.message.reply_text("❌ An error occurred. Please try again.")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
