@@ -45,67 +45,40 @@ def init_db(database_url):
     # Create tables if they don't exist
     Base.metadata.create_all(engine)
     
-    # Add new columns if they don't exist
+    # Ensure all expected columns exist (helps if someone dropped columns manually)
+    expected_columns = {
+        # column_name: SQL definition to add if missing
+        'telegram_id': 'BIGINT UNIQUE',
+        'username': 'VARCHAR',
+        'balance': 'FLOAT DEFAULT 1000.0',
+        'holdings': 'JSONB DEFAULT \'{}\'',
+        'realized_pnl': 'FLOAT DEFAULT 0.0',
+        'history': 'JSONB DEFAULT \'[]\'',
+        'context': 'JSONB DEFAULT \'{}\'',
+        'referral_id': 'BIGINT',
+        'created_at': 'TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()',
+        'last_broadcast_message_id': 'INTEGER'
+    }
+    
     with engine.connect() as conn:
         try:
-            # Check if last_broadcast_message_id column exists
-            check_column_query = text("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name='users' 
-                AND column_name='last_broadcast_message_id'
-            """)
-            result = conn.execute(check_column_query).fetchone()
-            
-            if not result:
-                logger.info("Adding last_broadcast_message_id column to users table")
-                add_column_query = text("""
-                    ALTER TABLE users 
-                    ADD COLUMN last_broadcast_message_id INTEGER
+            for column_name, column_def in expected_columns.items():
+                # Check if column exists
+                check_column_query = text("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='users' 
+                    AND column_name=:col
                 """)
-                conn.execute(add_column_query)
-                conn.commit()
-                logger.info("Successfully added last_broadcast_message_id column")
-
-            # Check if referral_id column exists
-            check_referral_id = text("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name='users' 
-                AND column_name='referral_id'
-            """)
-            result = conn.execute(check_referral_id).fetchone()
-            
-            if not result:
-                logger.info("Adding referral_id column to users table")
-                add_referral_id_query = text("""
-                    ALTER TABLE users 
-                    ADD COLUMN referral_id BIGINT
-                """)
-                conn.execute(add_referral_id_query)
-                conn.commit()
-                logger.info("Successfully added referral_id column")
-
-            # Check if referred_by column exists and rename it if it does
-            check_referred_by = text("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name='users' 
-                AND column_name='referred_by'
-            """)
-            result = conn.execute(check_referred_by).fetchone()
-            
-            if result:
-                logger.info("Renaming referred_by column to referral_id")
-                rename_column_query = text("""
-                    ALTER TABLE users 
-                    RENAME COLUMN referred_by TO referral_id
-                """)
-                conn.execute(rename_column_query)
-                conn.commit()
-                logger.info("Successfully renamed referred_by to referral_id")
+                result = conn.execute(check_column_query, {'col': column_name}).fetchone()
+                if not result:
+                    logger.info(f"Adding missing column '{column_name}' to users table")
+                    add_column_query = text(f"ALTER TABLE users ADD COLUMN {column_name} {column_def}")
+                    conn.execute(add_column_query)
+                    conn.commit()
+                    logger.info(f"Successfully added '{column_name}' column")
         except Exception as e:
-            logger.error(f"Error during database migration: {e}")
+            logger.error(f"Error ensuring columns exist: {e}")
             raise
     
     return engine 
