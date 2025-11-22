@@ -62,6 +62,23 @@ def init_db(database_url):
     
     with engine.connect() as conn:
         try:
+            # First, handle the migration from referred_by to referral_id
+            check_old_column = text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='users' 
+                AND column_name='referred_by'
+            """)
+            old_column_exists = conn.execute(check_old_column).fetchone()
+            
+            if old_column_exists:
+                logger.info("Renaming 'referred_by' column to 'referral_id'")
+                rename_query = text("ALTER TABLE users RENAME COLUMN referred_by TO referral_id")
+                conn.execute(rename_query)
+                conn.commit()
+                logger.info("Successfully renamed column")
+            
+            # Then ensure all expected columns exist
             for column_name, column_def in expected_columns.items():
                 # Check if column exists
                 check_column_query = text("""
